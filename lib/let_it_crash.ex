@@ -264,46 +264,54 @@ defmodule LetItCrash do
   """
   @spec verify_ets_cleanup(atom() | :ets.tid(), term(), keyword()) :: :ok | {:error, term()}
   def verify_ets_cleanup(table, key, opts \\ []) do
-    timeout = Keyword.get(opts, :timeout, 1000)
-    expect_cleanup = Keyword.get(opts, :expect_cleanup, true)
-    expect_recreate = Keyword.get(opts, :expect_recreate, false)
-
-    # Check if table exists
-    case :ets.whereis(table) do
-      :undefined ->
-        {:error, :table_not_found}
-
-      _tid ->
-        initial_entry = :ets.lookup(table, key)
-
-        if expect_cleanup do
-          case wait_for_ets_cleanup(table, key, timeout) do
-            :ok ->
-              if expect_recreate do
-                wait_for_ets_recreation(table, key, initial_entry, timeout)
-              else
-                :ok
-              end
-
-            error ->
-              error
-          end
-        else
-          # If not expecting cleanup, check if we should expect recreation
-          if expect_recreate do
-            wait_for_ets_recreation(table, key, initial_entry, timeout)
-          else
-            # Just verify entry still exists
-            case :ets.lookup(table, key) do
-              [] -> {:error, :entry_unexpectedly_removed}
-              _entry -> :ok
-            end
-          end
-        end
+    with :ok <- validate_table_exists(table),
+         initial_entry <- :ets.lookup(table, key) do
+      process_ets_verification(table, key, initial_entry, opts)
     end
   end
 
   # Private functions
+
+  defp validate_table_exists(table) do
+    case :ets.whereis(table) do
+      :undefined -> {:error, :table_not_found}
+      _tid -> :ok
+    end
+  end
+
+  defp process_ets_verification(table, key, initial_entry, opts) do
+    timeout = Keyword.get(opts, :timeout, 1000)
+    expect_cleanup = Keyword.get(opts, :expect_cleanup, true)
+    expect_recreate = Keyword.get(opts, :expect_recreate, false)
+
+    cond do
+      expect_cleanup and expect_recreate ->
+        handle_cleanup_and_recreation(table, key, initial_entry, timeout)
+
+      expect_cleanup ->
+        wait_for_ets_cleanup(table, key, timeout)
+
+      expect_recreate ->
+        wait_for_ets_recreation(table, key, initial_entry, timeout)
+
+      true ->
+        verify_entry_exists(table, key)
+    end
+  end
+
+  defp handle_cleanup_and_recreation(table, key, initial_entry, timeout) do
+    case wait_for_ets_cleanup(table, key, timeout) do
+      :ok -> wait_for_ets_recreation(table, key, initial_entry, timeout)
+      error -> error
+    end
+  end
+
+  defp verify_entry_exists(table, key) do
+    case :ets.lookup(table, key) do
+      [] -> {:error, :entry_unexpectedly_removed}
+      _entry -> :ok
+    end
+  end
 
   defp wait_for_recovery(process_name, original_pid, timeout, interval) do
     end_time = System.monotonic_time(:millisecond) + timeout
@@ -333,40 +341,33 @@ defmodule LetItCrash do
   end
 
   defp wait_for_registry_cleanup(registry, key, initial_pids, end_time) do
-    current_time = System.monotonic_time(:millisecond)
-
-    cond do
-      current_time > end_time ->
-        {:error, :cleanup_timeout}
-
-      true ->
-        current_entries = Registry.lookup(registry, key)
-        current_pids = Enum.map(current_entries, fn {pid, _} -> pid end)
-
-        # Check if all initial PIDs are gone and new ones appeared
-        old_pids_gone = Enum.all?(initial_pids, fn pid -> pid not in current_pids end)
-        new_entries_exist = length(current_entries) > 0
-
-        cond do
-          # If there were no initial entries, just check that new ones exist
-          initial_pids == [] and new_entries_exist ->
-            :ok
-
-          # If there were initial entries, check they're gone and new ones exist
-          old_pids_gone and new_entries_exist ->
-            :ok
-
-          # If there were initial entries and they're gone but no new ones yet
-          old_pids_gone and not new_entries_exist ->
-            Process.sleep(50)
-            wait_for_registry_cleanup(registry, key, initial_pids, end_time)
-
-          # Still have old PIDs, keep waiting
-          true ->
-            Process.sleep(50)
-            wait_for_registry_cleanup(registry, key, initial_pids, end_time)
-        end
+    if System.monotonic_time(:millisecond) > end_time do
+      {:error, :cleanup_timeout}
+    else
+      check_registry_state(registry, key, initial_pids, end_time)
     end
+  end
+
+  defp check_registry_state(registry, key, initial_pids, end_time) do
+    current_entries = Registry.lookup(registry, key)
+    current_pids = Enum.map(current_entries, fn {pid, _} -> pid end)
+
+    old_pids_gone = Enum.all?(initial_pids, fn pid -> pid not in current_pids end)
+    new_entries_exist = length(current_entries) > 0
+
+    case {initial_pids == [], old_pids_gone, new_entries_exist} do
+      # No initial entries, new ones exist
+      {true, _, true} -> :ok
+      # Old entries gone, new ones exist
+      {false, true, true} -> :ok
+      {false, true, false} -> retry_registry_cleanup(registry, key, initial_pids, end_time)
+      _ -> retry_registry_cleanup(registry, key, initial_pids, end_time)
+    end
+  end
+
+  defp retry_registry_cleanup(registry, key, initial_pids, end_time) do
+    Process.sleep(50)
+    wait_for_registry_cleanup(registry, key, initial_pids, end_time)
   end
 
   defp wait_for_ets_cleanup(table, key, timeout) do
@@ -396,29 +397,29 @@ defmodule LetItCrash do
   end
 
   defp do_wait_for_ets_recreation(table, key, initial_entry, end_time) do
-    current_time = System.monotonic_time(:millisecond)
+    if System.monotonic_time(:millisecond) > end_time do
+      {:error, :recreation_timeout}
+    else
+      check_ets_recreation_state(table, key, initial_entry, end_time)
+    end
+  end
+
+  defp check_ets_recreation_state(table, key, initial_entry, end_time) do
+    current_entry = :ets.lookup(table, key)
 
     cond do
-      current_time > end_time ->
-        {:error, :recreation_timeout}
+      # Entry was recreated (exists and is different from initial)
+      current_entry != [] and current_entry != initial_entry ->
+        :ok
 
-      true ->
-        current_entry = :ets.lookup(table, key)
+      # Entry exists and matches initial (meaning it wasn't cleaned up)
+      current_entry == initial_entry ->
+        {:error, :entry_not_cleaned_up}
 
-        cond do
-          # Entry was recreated (exists and is different from initial)
-          current_entry != [] and current_entry != initial_entry ->
-            :ok
-
-          # Entry exists and matches initial (meaning it wasn't cleaned up)
-          current_entry == initial_entry ->
-            {:error, :entry_not_cleaned_up}
-
-          # Entry doesn't exist yet, keep waiting
-          current_entry == [] ->
-            Process.sleep(50)
-            do_wait_for_ets_recreation(table, key, initial_entry, end_time)
-        end
+      # Entry doesn't exist yet, keep waiting
+      current_entry == [] ->
+        Process.sleep(50)
+        do_wait_for_ets_recreation(table, key, initial_entry, end_time)
     end
   end
 end
