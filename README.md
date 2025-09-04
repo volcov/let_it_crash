@@ -6,6 +6,19 @@ A testing library for crash recovery and OTP supervision behavior in Elixir.
 
 Embrace the "let it crash" philosophy in your tests by easily simulating crashes and verifying that your GenServers and supervised processes recover correctly.
 
+## Why Use LetItCrash?
+
+**We know Elixir/OTP supervision works.** LetItCrash doesn't test if processes restart—it tests if **your application handles restarts correctly**.
+
+Real bugs this library helps catch:
+- 🔍 **Resource leaks**: Database connections, file handles, ETS entries not cleaned up
+- 🗂️ **Registry inconsistencies**: Stale entries pointing to dead processes  
+- 💾 **State corruption**: Shared caches with orphaned data after crashes
+- 🔗 **Cascade failures**: Client processes crashing when servers restart
+- ⚙️ **Incomplete initialization**: Processes not fully recovering their expected state
+
+*Think of it as integration testing for your crash recovery logic, not unit testing the BEAM.*
+
 ## Installation
 
 Add `let_it_crash` to your list of dependencies in `mix.exs`:
