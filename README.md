@@ -1,6 +1,10 @@
 # LetItCrash
 
-[![CI](https://github.com/volcov/let_it_crash/actions/workflows/ci.yml/badge.svg)](https://github.com/volcov/let_it_crash/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/volcov/let_it_crash/blob/main/LICENSE) [![Elixir Version](https://img.shields.io/badge/elixir-%3E%3D%201.17-blue)](https://elixir-lang.org)
+[![CI](https://github.com/volcov/let_it_crash/actions/workflows/ci.yml/badge.svg)](https://github.com/volcov/let_it_crash/actions/workflows/ci.yml)
+[![Hex.pm](https://img.shields.io/hexpm/v/let_it_crash)](https://hex.pm/packages/let_it_crash)
+[![Hex.pm Downloads](https://img.shields.io/hexpm/dt/let_it_crash)](https://hex.pm/packages/let_it_crash)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/volcov/let_it_crash/blob/main/LICENSE)
+[![Elixir Version](https://img.shields.io/badge/elixir-%3E%3D%201.17-blue)](https://elixir-lang.org)
 
 A testing library for crash recovery and OTP supervision behavior in Elixir.
 
