@@ -122,3 +122,26 @@ end, timeout: 2000)
 🔄 **State Reset**: Process state is reset to initial values after restart (this is normal OTP behavior).
 
 🏷️ **Named Processes**: Recovery detection only works with registered (named) processes.
+
+## Contributing
+
+Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for details on:
+
+- 🐛 Reporting bugs
+- 💡 Suggesting features  
+- 🔧 Submitting pull requests
+- 🧪 Running tests
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Support
+
+- 📝 [Open an issue](https://github.com/volcov/let_it_crash/issues) for bug reports or feature requests
+- 🤝 Check our [Contributing Guide](CONTRIBUTING.md) to help improve the project
+- ⭐ Star the project if you find it useful!
+
+---
+
+**Embrace the crash, test the recovery!** 💥➡️✅
