@@ -21,25 +21,24 @@ jobs:
     - name: Set up Elixir
       uses: erlef/setup-beam@v1
       with:
-        elixir-version: '1.18'
-        otp-version: '26'
-        version-type: strict
+        elixir-version: '1.17.2'
+        otp-version: '26.0'
 
     - name: Cache deps
       uses: actions/cache@v4
       with:
         path: deps
-        key: ${{ runner.os }}-deps-1.18-26-${{ hashFiles('**/mix.lock') }}
+        key: ${{ runner.os }}-deps-1.17.2-26.0-${{ hashFiles('**/mix.lock') }}
         restore-keys: |
-          ${{ runner.os }}-deps-1.18-26-
+          ${{ runner.os }}-deps-1.17.2-26.0-
 
     - name: Cache _build
       uses: actions/cache@v4
       with:
         path: _build
-        key: ${{ runner.os }}-build-1.18-26-${{ hashFiles('**/mix.lock') }}
+        key: ${{ runner.os }}-build-1.17.2-26.0-${{ hashFiles('**/mix.lock') }}
         restore-keys: |
-          ${{ runner.os }}-build-1.18-26-
+          ${{ runner.os }}-build-1.17.2-26.0-
 
     - name: Install dependencies
       run: mix deps.get

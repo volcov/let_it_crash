@@ -29,7 +29,7 @@ end
 ```
 
 **Environment (please fill in):**
-- Elixir: [e.g. 1.18.0]
+- Elixir: [e.g. 1.17.0]
 - OTP: [e.g. 26.0]
 - LetItCrash: [e.g. 0.1.0]
 - OS: [e.g. macOS, Linux, Windows]

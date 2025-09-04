@@ -27,5 +27,5 @@ List solutions you've already tried.
 - [ ] Searched existing issues
 
 **Environment Information (if relevant)**
-- Elixir: [e.g. 1.18.0]
+- Elixir: [e.g. 1.17.0]
 - LetItCrash: [e.g. 0.1.0]

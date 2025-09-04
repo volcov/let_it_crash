@@ -8,7 +8,7 @@ defmodule LetItCrash.MixProject do
     [
       app: :let_it_crash,
       version: @version,
-      elixir: "~> 1.18",
+      elixir: "~> 1.17",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       package: package(),

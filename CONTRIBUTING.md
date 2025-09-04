@@ -31,7 +31,7 @@ Clear description of the bug.
 What should happen.
 
 **Environment**
-- Elixir: 1.18.0
+- Elixir: 1.17.0
 - LetItCrash: 0.1.0
 - OTP: 26.0
 ```
