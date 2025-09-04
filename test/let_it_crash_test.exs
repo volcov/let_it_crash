@@ -221,4 +221,202 @@ defmodule LetItCrashTest do
       Process.exit(supervisor, :shutdown)
     end
   end
+
+  describe "Registry cleanup testing" do
+    setup do
+      # Create a test registry for these tests
+      {:ok, _} = Registry.start_link(keys: :unique, name: LetItCrashTestRegistry)
+
+      on_exit(fn ->
+        Process.whereis(LetItCrashTestRegistry) &&
+          Process.exit(Process.whereis(LetItCrashTestRegistry), :kill)
+      end)
+
+      :ok
+    end
+
+    defmodule RegistryServer do
+      use GenServer
+
+      def start_link(opts \\ []) do
+        name = Keyword.get(opts, :name)
+        registry = Keyword.get(opts, :registry)
+        GenServer.start_link(__MODULE__, {registry, name}, name: name)
+      end
+
+      def init({registry, name}) do
+        if registry do
+          Registry.register(registry, name, %{status: :active})
+        end
+
+        {:ok, %{registry: registry, name: name}}
+      end
+
+      def handle_call(:get_state, _from, state) do
+        {:reply, state, state}
+      end
+    end
+
+    defmodule RegistrySupervisor do
+      use Supervisor
+
+      def start_link(opts \\ []) do
+        Supervisor.start_link(__MODULE__, :ok, opts)
+      end
+
+      def start_registry_server(supervisor, name, registry) do
+        child_spec = %{
+          id: name,
+          start: {RegistryServer, :start_link, [[name: name, registry: registry]]},
+          restart: :permanent
+        }
+
+        Supervisor.start_child(supervisor, child_spec)
+      end
+
+      def init(:ok) do
+        Supervisor.init([], strategy: :one_for_one)
+      end
+    end
+
+    test "assert_clean_registry verifies registry cleanup on process restart" do
+      {:ok, supervisor} = RegistrySupervisor.start_link()
+
+      {:ok, _pid} =
+        RegistrySupervisor.start_registry_server(
+          supervisor,
+          :registry_test_server,
+          LetItCrashTestRegistry
+        )
+
+      # Verify process is registered
+      entries = Registry.lookup(LetItCrashTestRegistry, :registry_test_server)
+      assert length(entries) == 1
+
+      # Crash and verify cleanup
+      LetItCrash.crash(:registry_test_server)
+
+      assert LetItCrash.assert_clean_registry(LetItCrashTestRegistry, :registry_test_server) ==
+               :ok
+
+      # Clean up
+      Process.exit(supervisor, :shutdown)
+    end
+
+    test "assert_clean_registry handles timeout" do
+      # Test with a process that won't restart
+      {:ok, _pid} =
+        RegistryServer.start_link(name: :temp_registry_server, registry: LetItCrashTestRegistry)
+
+      LetItCrash.crash(:temp_registry_server)
+
+      # Should timeout since there's no supervisor to restart it
+      result =
+        LetItCrash.assert_clean_registry(LetItCrashTestRegistry, :temp_registry_server,
+          timeout: 100
+        )
+
+      assert result == {:error, :cleanup_timeout}
+    end
+  end
+
+  describe "ETS cleanup testing" do
+    setup do
+      # Create test ETS table
+      :ets.new(:test_ets_table, [:set, :public, :named_table])
+
+      on_exit(fn ->
+        if :ets.whereis(:test_ets_table) != :undefined do
+          :ets.delete(:test_ets_table)
+        end
+      end)
+
+      :ok
+    end
+
+    defmodule EtsServer do
+      use GenServer
+
+      def start_link(opts \\ []) do
+        name = Keyword.get(opts, :name)
+        GenServer.start_link(__MODULE__, :ok, name: name)
+      end
+
+      def set_ets_data(server, key, value) do
+        GenServer.call(server, {:set_ets, key, value})
+      end
+
+      def init(:ok) do
+        {:ok, %{}}
+      end
+
+      def handle_call({:set_ets, key, value}, _from, state) do
+        :ets.insert(:test_ets_table, {key, value})
+        {:reply, :ok, state}
+      end
+
+      def terminate(_reason, _state) do
+        # Clean up ETS entries belonging to this process
+        :ets.delete(:test_ets_table, :server_data)
+        :ok
+      end
+    end
+
+    defmodule EtsSupervisor do
+      use Supervisor
+
+      def start_link(opts \\ []) do
+        Supervisor.start_link(__MODULE__, :ok, opts)
+      end
+
+      def start_ets_server(supervisor, name) do
+        child_spec = %{
+          id: name,
+          start: {EtsServer, :start_link, [[name: name]]},
+          restart: :permanent
+        }
+
+        Supervisor.start_child(supervisor, child_spec)
+      end
+
+      def init(:ok) do
+        Supervisor.init([], strategy: :one_for_one)
+      end
+    end
+
+    test "verify_ets_cleanup detects ETS entry cleanup" do
+      # Insert initial data manually
+      :ets.insert(:test_ets_table, {:server_data, "test_value"})
+      assert :ets.lookup(:test_ets_table, :server_data) == [{:server_data, "test_value"}]
+
+      # Manually delete the entry to simulate cleanup
+      :ets.delete(:test_ets_table, :server_data)
+
+      # Verify cleanup was detected
+      assert LetItCrash.verify_ets_cleanup(:test_ets_table, :server_data) == :ok
+    end
+
+    test "verify_ets_cleanup handles table not found" do
+      result = LetItCrash.verify_ets_cleanup(:non_existent_table, :some_key)
+      assert result == {:error, :table_not_found}
+    end
+
+    test "verify_ets_cleanup with expect_recreate option" do
+      # Insert initial data
+      :ets.insert(:test_ets_table, {:recreate_test, "initial"})
+
+      # Test recreation expectation with the initial entry still present
+      # Since we're not cleaning up first and expecting recreation, it should detect
+      # that the entry wasn't cleaned up
+      result =
+        LetItCrash.verify_ets_cleanup(:test_ets_table, :recreate_test,
+          expect_cleanup: false,
+          expect_recreate: true,
+          timeout: 100
+        )
+
+      # Should detect that entry wasn't cleaned up
+      assert result == {:error, :entry_not_cleaned_up}
+    end
+  end
 end
