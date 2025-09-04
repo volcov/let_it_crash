@@ -117,6 +117,105 @@ LetItCrash.test_restart(:process_name, fn ->
 end, timeout: 2000)
 ```
 
+### `assert_clean_registry/2,3`
+Verifies that Registry entries are properly cleaned up when a process crashes and recreated when it recovers.
+
+```elixir
+# Basic usage - verifies cleanup and re-registration
+LetItCrash.assert_clean_registry(MyApp.Registry, :process_name)
+
+# With custom timeout
+LetItCrash.assert_clean_registry(MyApp.Registry, :process_name, timeout: 3000)
+```
+
+This function ensures your processes properly:
+- Remove old Registry entries when crashing
+- Create new Registry entries when recovering
+- Point to the correct new PID after restart
+
+### `verify_ets_cleanup/2,3`
+Monitors ETS table entries to verify proper cleanup during process crashes.
+
+```elixir
+# Verify entry is cleaned up (default behavior)
+LetItCrash.verify_ets_cleanup(:my_cache, :process_data)
+
+# Custom cleanup expectations
+LetItCrash.verify_ets_cleanup(:shared_table, :key, 
+  expect_cleanup: true,
+  expect_recreate: false,
+  timeout: 1500
+)
+
+# Verify recreation after cleanup
+LetItCrash.verify_ets_cleanup(:cache_table, :data_key,
+  expect_cleanup: true,
+  expect_recreate: true
+)
+```
+
+**Options:**
+- `:expect_cleanup` - Whether entry should be removed (default: true)
+- `:expect_recreate` - Whether entry should be recreated (default: false)  
+- `:timeout` - Maximum wait time (default: 1000ms)
+
+## Advanced Usage Examples
+
+### Testing Registry and ETS Cleanup
+
+```elixir
+defmodule MyAppTest do
+  use ExUnit.Case
+  use LetItCrash
+
+  test "server cleans up resources properly on crash" do
+    # Setup: Start Registry and ETS table
+    {:ok, _} = Registry.start_link(keys: :unique, name: MyApp.Registry)
+    :ets.new(:app_cache, [:set, :public, :named_table])
+    
+    {:ok, supervisor} = MySupervisor.start_link()
+    {:ok, _pid} = MySupervisor.start_worker(supervisor, :resource_server)
+
+    # Server registers itself and creates ETS entries
+    assert [{_pid, _}] = Registry.lookup(MyApp.Registry, :resource_server)
+    :ets.insert(:app_cache, {:server_data, "important_data"})
+
+    # Crash and verify proper cleanup + recovery
+    LetItCrash.crash(:resource_server)
+    
+    # Verify Registry cleanup and re-registration
+    assert :ok = LetItCrash.assert_clean_registry(MyApp.Registry, :resource_server)
+    
+    # Verify ETS cleanup
+    assert :ok = LetItCrash.verify_ets_cleanup(:app_cache, :server_data)
+
+    Process.exit(supervisor, :shutdown)
+  end
+end
+```
+
+### Combined Testing Workflow
+
+```elixir
+test "complete crash recovery validation" do
+  {:ok, supervisor} = MySupervisor.start_link()
+  {:ok, _pid} = MySupervisor.start_worker(supervisor, :full_test_server)
+
+  # Test complete recovery workflow
+  LetItCrash.test_restart(:full_test_server, fn ->
+    # This runs before AND after crash
+    MyServer.increment_counter()
+    assert MyServer.get_counter() == 1  # Will be reset to 0, then incremented to 1
+  end)
+
+  # Verify additional cleanup
+  LetItCrash.assert_clean_registry(MyApp.Registry, :full_test_server)
+  LetItCrash.verify_ets_cleanup(:server_cache, :counter_data)
+
+  Process.exit(supervisor, :shutdown)
+end
+```
+
 ## Important Notes
 
 ⚠️ **Requires Supervision**: The `recovered?/1` and `test_restart/2` functions only work with supervised processes. Unsupervised processes won't restart after crashes.
