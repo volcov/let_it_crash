@@ -1,5 +1,7 @@
 # LetItCrash
 
+[![CI](https://github.com/volcov/let_it_crash/actions/workflows/ci.yml/badge.svg)](https://github.com/volcov/let_it_crash/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/volcov/let_it_crash/blob/main/LICENSE) [![Elixir Version](https://img.shields.io/badge/elixir-%3E%3D%201.17-blue)](https://elixir-lang.org)
+
 A testing library for crash recovery and OTP supervision behavior in Elixir.
 
 Embrace the "let it crash" philosophy in your tests by easily simulating crashes and verifying that your GenServers and supervised processes recover correctly.
