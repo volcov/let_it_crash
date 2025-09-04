@@ -19,6 +19,19 @@ defmodule LetItCrash do
 
   """
 
+  # ETS table to store original PIDs for recovery tracking
+  @table_name :let_it_crash_tracking
+
+  def start_tracking do
+    case :ets.whereis(@table_name) do
+      :undefined ->
+        :ets.new(@table_name, [:set, :public, :named_table])
+
+      _ ->
+        :ok
+    end
+  end
+
   @doc """
   Imports LetItCrash testing functions into the current module.
   """
@@ -61,8 +74,14 @@ defmodule LetItCrash do
 
   def crash(process) when is_atom(process) do
     case Process.whereis(process) do
-      nil -> {:error, :process_not_found}
-      pid -> crash(pid)
+      nil ->
+        {:error, :process_not_found}
+
+      pid ->
+        # Store the original PID for recovery tracking
+        start_tracking()
+        :ets.insert(@table_name, {process, pid})
+        crash(pid)
     end
   end
 
@@ -75,6 +94,7 @@ defmodule LetItCrash do
   ## Parameters
 
     * `process_name` - The registered name of the process to check
+    * `original_pid` - The PID before the crash (optional, will be retrieved if not provided)
     * `opts` - Options for recovery checking
       * `:timeout` - Maximum time to wait for recovery (default: 1000ms)
       * `:interval` - Polling interval (default: 50ms)
@@ -84,16 +104,41 @@ defmodule LetItCrash do
       test "process recovers after crash" do
         original_pid = Process.whereis(MyGenServer)
         LetItCrash.crash(MyGenServer)
-        assert LetItCrash.recovered?(MyGenServer)
+        assert LetItCrash.recovered?(MyGenServer, original_pid)
       end
 
   """
-  @spec recovered?(atom(), keyword()) :: boolean()
-  def recovered?(process_name, opts \\ []) do
+  @spec recovered?(atom(), pid() | keyword()) :: boolean()
+  @spec recovered?(atom(), pid(), keyword()) :: boolean()
+  def recovered?(process_name, original_pid_or_opts \\ [])
+
+  def recovered?(process_name, opts) when is_list(opts) do
+    # Try to get stored original PID first, fallback to current PID
+    original_pid =
+      case :ets.whereis(@table_name) do
+        :undefined ->
+          nil
+
+        _ ->
+          case :ets.lookup(@table_name, process_name) do
+            [{^process_name, pid}] -> pid
+            [] -> nil
+          end
+      end
+
+    recovered?(process_name, original_pid, opts)
+  end
+
+  def recovered?(process_name, original_pid) when is_pid(original_pid) do
+    recovered?(process_name, original_pid, [])
+  end
+
+  def recovered?(process_name, original_pid, opts)
+      when is_pid(original_pid) or is_nil(original_pid) do
     timeout = Keyword.get(opts, :timeout, 1000)
     interval = Keyword.get(opts, :interval, 50)
 
-    wait_for_recovery(process_name, timeout, interval)
+    wait_for_recovery(process_name, original_pid, timeout, interval)
   end
 
   @doc """
@@ -131,9 +176,15 @@ defmodule LetItCrash do
 
         case process_name && recovered?(process_name, opts) do
           # Execute test function after recovery
-          true -> test_fn.()
-          false -> {:error, :recovery_failed}
-          nil -> {:error, :cannot_test_unnamed_process}
+          true ->
+            test_fn.()
+            :ok
+
+          false ->
+            {:error, :recovery_failed}
+
+          nil ->
+            {:error, :cannot_test_unnamed_process}
         end
 
       error ->
@@ -143,24 +194,30 @@ defmodule LetItCrash do
 
   # Private functions
 
-  defp wait_for_recovery(process_name, timeout, interval) do
+  defp wait_for_recovery(process_name, original_pid, timeout, interval) do
     end_time = System.monotonic_time(:millisecond) + timeout
-    do_wait_for_recovery(process_name, end_time, interval)
+    do_wait_for_recovery(process_name, original_pid, end_time, interval)
   end
 
-  defp do_wait_for_recovery(process_name, end_time, interval) do
+  defp do_wait_for_recovery(process_name, original_pid, end_time, interval) do
     current_time = System.monotonic_time(:millisecond)
+    current_pid = Process.whereis(process_name)
 
     cond do
       current_time > end_time ->
         false
 
-      Process.whereis(process_name) != nil ->
+      # If no original PID was provided, just check if process exists
+      is_nil(original_pid) and current_pid != nil ->
+        true
+
+      # If we have original PID, check if current PID is different and not nil
+      is_pid(original_pid) and current_pid != nil and current_pid != original_pid ->
         true
 
       true ->
         Process.sleep(interval)
-        do_wait_for_recovery(process_name, end_time, interval)
+        do_wait_for_recovery(process_name, original_pid, end_time, interval)
     end
   end
 end
