@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2025-10-01
+
+### Added
+- **`crash!/1` function** - New "bang" version that uses `:kill` signal for guaranteed process termination
+  - Works with processes that have `Process.flag(:trap_exit, true)`
+  - Cannot be trapped by the target process
+  - Particularly useful for testing GenServers with cleanup logic in `handle_info({:EXIT, ...})`
+  - Supports both PID and registered name with automatic PID tracking
+  - Complete test suite including `TrapExitServer` demonstration
+
+### Changed
+- Updated module documentation to explain the difference between `crash/1` and `crash!/1`
+- Enhanced README with "When to use `crash!/1`?" section and practical examples
+- Added comparison table between `:shutdown` and `:kill` exit signals
+
+### Technical Details
+- `:kill` exit signal bypasses process trapping mechanisms
+- Maintains same API signature as `crash/1` for consistency
+- Includes integration tests with supervised trap_exit processes
+
 ## [0.1.0] - 2025-01-03
 
 ### Core Functions
@@ -48,4 +68,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Issue and PR templates for community contributions
 - Comprehensive test coverage with realistic usage examples
 
+[0.2.0]: https://github.com/volcov/let_it_crash/releases/tag/v0.2.0
 [0.1.0]: https://github.com/volcov/let_it_crash/releases/tag/v0.1.0

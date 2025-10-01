@@ -17,6 +17,16 @@ defmodule LetItCrash do
         assert LetItCrash.recovered?(MyGenServer)
       end
 
+  ## Crash Functions
+
+  The library provides two crash functions:
+
+    * `crash/1` - Sends a `:shutdown` exit signal (can be trapped by processes with `trap_exit: true`)
+    * `crash!/1` - Sends a `:kill` exit signal (cannot be trapped, guarantees termination)
+
+  Use `crash!/1` when testing processes that trap exits, such as GenServers that
+  need to perform cleanup operations.
+
   """
 
   # ETS table to store original PIDs for recovery tracking
@@ -82,6 +92,65 @@ defmodule LetItCrash do
         start_tracking()
         :ets.insert(@table_name, {process, pid})
         crash(pid)
+    end
+  end
+
+  @doc """
+  Crashes a process using `:kill` signal, which cannot be trapped.
+
+  Unlike `crash/1`, this function uses `:kill` instead of `:shutdown`,
+  which ensures the process is terminated even if it has `Process.flag(:trap_exit, true)`.
+  This is useful for testing processes that trap exits, such as GenServers that need
+  to perform cleanup on normal exits.
+
+  ## Parameters
+
+    * `process` - A PID or registered process name to crash
+
+  ## Examples
+
+      # For processes with trap_exit:
+      defmodule ScoreCoordinator do
+        use GenServer
+
+        def init(_) do
+          Process.flag(:trap_exit, true)
+          {:ok, %{}}
+        end
+      end
+
+      # In your tests:
+      {:ok, pid} = ScoreCoordinator.start_link([])
+      LetItCrash.crash!(pid)  # Garantees termination
+
+  """
+  @spec crash!(pid() | atom()) :: :ok | {:error, term()}
+  def crash!(process) when is_pid(process) do
+    # Check if we're linked to avoid crashing the caller
+    case Process.info(self(), :links) do
+      {:links, links} when is_list(links) ->
+        if process in links do
+          Process.unlink(process)
+        end
+
+      _ ->
+        :ok
+    end
+
+    Process.exit(process, :kill)
+    :ok
+  end
+
+  def crash!(process) when is_atom(process) do
+    case Process.whereis(process) do
+      nil ->
+        {:error, :process_not_found}
+
+      pid ->
+        # Store the original PID for recovery tracking
+        start_tracking()
+        :ets.insert(@table_name, {process, pid})
+        crash!(pid)
     end
   end
 
