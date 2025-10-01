@@ -93,6 +93,126 @@ defmodule LetItCrashTest do
     end
   end
 
+  describe "crash!/1" do
+    defmodule TrapExitServer do
+      use GenServer
+
+      def start_link(opts \\ []) do
+        GenServer.start_link(__MODULE__, :ok, opts)
+      end
+
+      def get_trap_exit(server) do
+        GenServer.call(server, :get_trap_exit)
+      end
+
+      @impl true
+      def init(:ok) do
+        Process.flag(:trap_exit, true)
+        {:ok, %{trap_exit: true}}
+      end
+
+      @impl true
+      def handle_call(:get_trap_exit, _from, state) do
+        {:reply, state.trap_exit, state}
+      end
+
+      @impl true
+      def handle_info({:EXIT, _pid, _reason}, state) do
+        # Process continues even after receiving EXIT message
+        {:noreply, state}
+      end
+    end
+
+    test "kills a process with trap_exit by PID" do
+      {:ok, pid} = TrapExitServer.start_link()
+      Process.unlink(pid)
+      assert Process.alive?(pid)
+      assert TrapExitServer.get_trap_exit(pid) == true
+
+      LetItCrash.crash!(pid)
+
+      # Give it a moment to process the kill signal
+      Process.sleep(10)
+      refute Process.alive?(pid)
+    end
+
+    test "kills a registered process with trap_exit by name" do
+      {:ok, pid} = TrapExitServer.start_link(name: :test_trap_exit_agent)
+      Process.unlink(pid)
+      assert Process.whereis(:test_trap_exit_agent) != nil
+      assert TrapExitServer.get_trap_exit(:test_trap_exit_agent) == true
+
+      LetItCrash.crash!(:test_trap_exit_agent)
+
+      # Give it a moment to actually die
+      Process.sleep(10)
+      assert Process.whereis(:test_trap_exit_agent) == nil
+    end
+
+    test "crash! guarantees termination unlike normal exits" do
+      {:ok, pid} = TrapExitServer.start_link()
+      Process.unlink(pid)
+      assert Process.alive?(pid)
+      assert TrapExitServer.get_trap_exit(pid) == true
+
+      # With :kill signal, process cannot trap and will always die
+      LetItCrash.crash!(pid)
+
+      # Give it a moment to process the kill signal
+      Process.sleep(10)
+      refute Process.alive?(pid)
+    end
+
+    test "returns error for non-existent process" do
+      assert LetItCrash.crash!(:non_existent) == {:error, :process_not_found}
+    end
+
+    test "works with supervised trap_exit process" do
+      defmodule TrapExitSupervisor do
+        use Supervisor
+
+        def start_link(opts \\ []) do
+          Supervisor.start_link(__MODULE__, :ok, opts)
+        end
+
+        def start_supervised_server(supervisor, name) do
+          child_spec = %{
+            id: name,
+            start: {TrapExitServer, :start_link, [[name: name]]},
+            restart: :permanent
+          }
+
+          Supervisor.start_child(supervisor, child_spec)
+        end
+
+        @impl true
+        def init(:ok) do
+          Supervisor.init([], strategy: :one_for_one)
+        end
+      end
+
+      {:ok, supervisor} = TrapExitSupervisor.start_link()
+
+      {:ok, original_pid} =
+        TrapExitSupervisor.start_supervised_server(supervisor, :supervised_trap_exit)
+
+      assert Process.alive?(original_pid)
+      assert TrapExitServer.get_trap_exit(:supervised_trap_exit) == true
+
+      # Use crash! to ensure it terminates
+      LetItCrash.crash!(:supervised_trap_exit)
+
+      # Should recover with a new PID
+      assert LetItCrash.recovered?(:supervised_trap_exit, timeout: 2000)
+      new_pid = Process.whereis(:supervised_trap_exit)
+      assert new_pid != original_pid
+      assert Process.alive?(new_pid)
+
+      # Clean up
+      Process.exit(supervisor, :shutdown)
+    end
+  end
+
   describe "recovered?/2" do
     test "returns false for non-existent process" do
       assert LetItCrash.recovered?(:non_existent) == false

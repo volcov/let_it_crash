@@ -90,12 +90,48 @@ end
 
 ## API
 
-### `crash/1`
+### `crash/1` and `crash!/1`
 Crashes a process by PID or registered name. When crashing by name, automatically stores the original PID for recovery tracking.
 
 ```elixir
+# crash/1 - Sends :shutdown signal (can be trapped)
 LetItCrash.crash(pid)           # Crash by PID
 LetItCrash.crash(:process_name) # Crash by name + auto tracking
+
+# crash!/1 - Sends :kill signal (cannot be trapped, guarantees termination)
+LetItCrash.crash!(pid)           # Crash by PID with :kill
+LetItCrash.crash!(:process_name) # Crash by name with :kill
+```
+
+**When to use `crash!/1`?**
+
+Use `crash!/1` when testing processes that use `Process.flag(:trap_exit, true)`, which is common in GenServers that need to perform cleanup on normal exits:
+
+```elixir
+defmodule ScoreCoordinator do
+  use GenServer
+
+  def init(_) do
+    Process.flag(:trap_exit, true)  # Traps normal exits
+    {:ok, %{}}
+  end
+
+  def handle_info({:EXIT, _pid, _reason}, state) do
+    # Cleanup logic here
+    {:noreply, state}
+  end
+end
+
+# In tests:
+test "coordinator recovers from forced crash" do
+  {:ok, supervisor} = MySupervisor.start_link()
+  {:ok, _pid} = MySupervisor.start_coordinator(supervisor, :coordinator)
+
+  # Use crash! to guarantee termination even with trap_exit
+  LetItCrash.crash!(:coordinator)
+
+  assert LetItCrash.recovered?(:coordinator)
+end
 ```
 
 ### `recovered?/1,2,3`
