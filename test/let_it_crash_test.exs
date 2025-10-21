@@ -91,9 +91,25 @@ defmodule LetItCrashTest do
     test "returns error for non-existent process" do
       assert LetItCrash.crash(:non_existent) == {:error, :process_not_found}
     end
+
+    test "supports piping for better composability" do
+      {:ok, pid} = Agent.start_link(fn -> 0 end, name: :pipeable_agent)
+      Process.unlink(pid)
+
+      # Test piping support
+      result =
+        Process.whereis(:pipeable_agent)
+        |> LetItCrash.crash()
+
+      assert result == :ok
+
+      # Give it a moment to actually die
+      Process.sleep(10)
+      assert Process.whereis(:pipeable_agent) == nil
+    end
   end
 
-  describe "crash!/1" do
+  describe "crash/2 with :kill type" do
     defmodule TrapExitServer do
       use GenServer
 
@@ -129,7 +145,7 @@ defmodule LetItCrashTest do
       assert Process.alive?(pid)
       assert TrapExitServer.get_trap_exit(pid) == true
 
-      LetItCrash.crash!(pid)
+      LetItCrash.crash(pid, :kill)
 
       # Give it a moment to process the kill signal
       Process.sleep(10)
@@ -142,21 +158,21 @@ defmodule LetItCrashTest do
       assert Process.whereis(:test_trap_exit_agent) != nil
       assert TrapExitServer.get_trap_exit(:test_trap_exit_agent) == true
 
-      LetItCrash.crash!(:test_trap_exit_agent)
+      LetItCrash.crash(:test_trap_exit_agent, :kill)
 
       # Give it a moment to actually die
       Process.sleep(10)
       assert Process.whereis(:test_trap_exit_agent) == nil
     end
 
-    test "crash! guarantees termination unlike normal exits" do
+    test ":kill signal guarantees termination unlike normal exits" do
       {:ok, pid} = TrapExitServer.start_link()
       Process.unlink(pid)
       assert Process.alive?(pid)
       assert TrapExitServer.get_trap_exit(pid) == true
 
       # With :kill signal, process cannot trap and will always die
-      LetItCrash.crash!(pid)
+      LetItCrash.crash(pid, :kill)
 
       # Give it a moment to process the kill signal
       Process.sleep(10)
@@ -164,7 +180,23 @@ defmodule LetItCrashTest do
     end
 
     test "returns error for non-existent process" do
-      assert LetItCrash.crash!(:non_existent) == {:error, :process_not_found}
+      assert LetItCrash.crash(:non_existent, :kill) == {:error, :process_not_found}
+    end
+
+    test "supports piping with :kill signal" do
+      {:ok, pid} = TrapExitServer.start_link(name: :pipeable_trap_exit)
+      Process.unlink(pid)
+
+      # Test piping support with :kill
+      result =
+        Process.whereis(:pipeable_trap_exit)
+        |> LetItCrash.crash(:kill)
+
+      assert result == :ok
+
+      # Give it a moment to process the kill signal
+      Process.sleep(10)
+      assert Process.whereis(:pipeable_trap_exit) == nil
     end
 
     test "works with supervised trap_exit process" do
@@ -199,8 +231,8 @@ defmodule LetItCrashTest do
       assert Process.alive?(original_pid)
       assert TrapExitServer.get_trap_exit(:supervised_trap_exit) == true
 
-      # Use crash! to ensure it terminates
-      LetItCrash.crash!(:supervised_trap_exit)
+      # Use :kill signal to ensure it terminates
+      LetItCrash.crash(:supervised_trap_exit, :kill)
 
       # Should recover with a new PID
       assert LetItCrash.recovered?(:supervised_trap_exit, timeout: 2000)
