@@ -19,12 +19,14 @@ defmodule LetItCrash do
 
   ## Crash Functions
 
-  The library provides two crash functions:
+  The library provides a `crash/2` function that allows you to specify the type of exit signal.
+  It follows the same convention as `Process.exit/2` for consistency and piping support:
 
-    * `crash/1` - Sends a `:shutdown` exit signal (can be trapped by processes with `trap_exit: true`)
-    * `crash!/1` - Sends a `:kill` exit signal (cannot be trapped, guarantees termination)
+    * `crash(pid)` - Sends a `:shutdown` exit signal (default, can be trapped)
+    * `crash(pid, :shutdown)` - Explicitly sends `:shutdown` signal
+    * `crash(pid, :kill)` - Sends a `:kill` exit signal (cannot be trapped, guarantees termination)
 
-  Use `crash!/1` when testing processes that trap exits, such as GenServers that
+  Use `:kill` when testing processes that trap exits, such as GenServers that
   need to perform cleanup operations.
 
   """
@@ -54,62 +56,31 @@ defmodule LetItCrash do
   @doc """
   Crashes a process by sending it an exit signal.
 
+  Follows the same convention as `Process.exit/2`, with the process as the first argument
+  to enable easy piping.
+
   ## Parameters
 
     * `process` - A PID or registered process name to crash
+    * `type` - The type of exit signal: `:shutdown` (default) or `:kill`
+
+  The `:shutdown` signal can be trapped by processes with `Process.flag(:trap_exit, true)`,
+  while `:kill` cannot be trapped and guarantees termination.
 
   ## Examples
 
-      # In your tests:
+      # Default :shutdown signal:
       {:ok, pid} = MyGenServer.start_link([])
       LetItCrash.crash(pid)
 
-  """
-  @spec crash(pid() | atom()) :: :ok | {:error, term()}
-  def crash(process) when is_pid(process) do
-    # Check if we're linked to avoid crashing the caller
-    case Process.info(self(), :links) do
-      {:links, links} when is_list(links) ->
-        if process in links do
-          Process.unlink(process)
-        end
+      # Explicitly specifying :shutdown:
+      LetItCrash.crash(pid, :shutdown)
 
-      _ ->
-        :ok
-    end
+      # Piping support:
+      Process.whereis(:my_process)
+      |> LetItCrash.crash(:kill)
 
-    Process.exit(process, :shutdown)
-    :ok
-  end
-
-  def crash(process) when is_atom(process) do
-    case Process.whereis(process) do
-      nil ->
-        {:error, :process_not_found}
-
-      pid ->
-        # Store the original PID for recovery tracking
-        start_tracking()
-        :ets.insert(@table_name, {process, pid})
-        crash(pid)
-    end
-  end
-
-  @doc """
-  Crashes a process using `:kill` signal, which cannot be trapped.
-
-  Unlike `crash/1`, this function uses `:kill` instead of `:shutdown`,
-  which ensures the process is terminated even if it has `Process.flag(:trap_exit, true)`.
-  This is useful for testing processes that trap exits, such as GenServers that need
-  to perform cleanup on normal exits.
-
-  ## Parameters
-
-    * `process` - A PID or registered process name to crash
-
-  ## Examples
-
-      # For processes with trap_exit:
+      # For processes with trap_exit, use :kill:
       defmodule ScoreCoordinator do
         use GenServer
 
@@ -119,13 +90,14 @@ defmodule LetItCrash do
         end
       end
 
-      # In your tests:
       {:ok, pid} = ScoreCoordinator.start_link([])
-      LetItCrash.crash!(pid)  # Garantees termination
+      LetItCrash.crash(pid, :kill)  # Guarantees termination
 
   """
-  @spec crash!(pid() | atom()) :: :ok | {:error, term()}
-  def crash!(process) when is_pid(process) do
+  @spec crash(process :: pid() | atom(), type :: :shutdown | :kill) :: :ok | {:error, term()}
+  def crash(process, type \\ :shutdown)
+
+  def crash(process, type) when is_pid(process) and type in [:shutdown, :kill] do
     # Check if we're linked to avoid crashing the caller
     case Process.info(self(), :links) do
       {:links, links} when is_list(links) ->
@@ -137,11 +109,11 @@ defmodule LetItCrash do
         :ok
     end
 
-    Process.exit(process, :kill)
+    Process.exit(process, type)
     :ok
   end
 
-  def crash!(process) when is_atom(process) do
+  def crash(process, type) when is_atom(process) and type in [:shutdown, :kill] do
     case Process.whereis(process) do
       nil ->
         {:error, :process_not_found}
@@ -150,7 +122,7 @@ defmodule LetItCrash do
         # Store the original PID for recovery tracking
         start_tracking()
         :ets.insert(@table_name, {process, pid})
-        crash!(pid)
+        crash(pid, type)
     end
   end
 
