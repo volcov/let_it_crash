@@ -141,6 +141,28 @@ test "coordinator recovers from forced crash" do
 end
 ```
 
+### `wait_for_process/1,2`
+Waits for a registered process to exist and be alive. Useful in test setup when you need to ensure a process is available before interacting with it.
+
+```elixir
+# Basic usage - waits up to 1000ms (default)
+:ok = LetItCrash.wait_for_process(:my_worker)
+
+# With custom timeout for slow-starting processes
+:ok = LetItCrash.wait_for_process(:heavy_worker, timeout: 5000)
+
+# With custom polling interval
+:ok = LetItCrash.wait_for_process(:worker, timeout: 2000, interval: 100)
+```
+
+**Options:**
+- `:timeout` - Maximum wait time (default: 1000ms)
+- `:interval` - Polling interval (default: 50ms)
+
+**Returns:**
+- `:ok` - Process exists and is alive
+- `{:error, :timeout}` - Process did not appear within timeout
+
 ### `recovered?/1,2,3`
 Checks if a registered process has recovered after a crash. Multiple signatures available:
 
