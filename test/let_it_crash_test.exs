@@ -307,6 +307,67 @@ defmodule LetItCrashTest do
     end
   end
 
+  describe "wait_for_process/2" do
+    test "returns :ok immediately when process exists" do
+      {:ok, _pid} = TestServer.start_link(name: :existing_process)
+
+      assert LetItCrash.wait_for_process(:existing_process) == :ok
+
+      # Clean up
+      Process.whereis(:existing_process) &&
+        Process.exit(Process.whereis(:existing_process), :kill)
+    end
+
+    test "waits for a process that starts after a delay" do
+      # Start a process after 100ms in a separate task
+      Task.start(fn ->
+        Process.sleep(100)
+        TestServer.start_link(name: :delayed_process)
+      end)
+
+      # Should wait and find the process
+      assert LetItCrash.wait_for_process(:delayed_process, timeout: 500) == :ok
+
+      # Verify it's actually there
+      assert Process.whereis(:delayed_process) != nil
+
+      # Clean up
+      Process.exit(Process.whereis(:delayed_process), :kill)
+    end
+
+    test "returns error on timeout when process never appears" do
+      result = LetItCrash.wait_for_process(:never_exists, timeout: 100)
+
+      assert result == {:error, :timeout}
+    end
+
+    test "works with supervised processes after supervisor starts" do
+      {:ok, supervisor} = TestSupervisor.start_link()
+      {:ok, _pid} = TestSupervisor.start_supervised_server(supervisor, :supervised_wait_test)
+
+      # Should find the process
+      assert LetItCrash.wait_for_process(:supervised_wait_test) == :ok
+
+      # Clean up
+      Process.exit(supervisor, :shutdown)
+    end
+
+    test "respects custom interval option" do
+      # Start a process after 80ms
+      Task.start(fn ->
+        Process.sleep(80)
+        TestServer.start_link(name: :interval_test_process)
+      end)
+
+      # With a longer interval, it should still find the process
+      assert LetItCrash.wait_for_process(:interval_test_process, timeout: 500, interval: 25) ==
+               :ok
+
+      # Clean up
+      Process.exit(Process.whereis(:interval_test_process), :kill)
+    end
+  end
+
   describe "test_restart/3" do
     test "executes function before and after crash for PID processes" do
       {:ok, pid} = TestServer.start_link()

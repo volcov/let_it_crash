@@ -54,6 +54,71 @@ defmodule LetItCrash do
   end
 
   @doc """
+  Waits for a registered process to exist and be alive.
+
+  This function is useful in test setup when you need to ensure a process
+  is available before interacting with it, particularly after starting
+  supervisors or during async initialization.
+
+  ## Parameters
+
+    * `process_name` - The registered name of the process to wait for
+    * `opts` - Options for waiting
+      * `:timeout` - Maximum time to wait (default: 1000ms)
+      * `:interval` - Polling interval (default: 50ms)
+
+  ## Returns
+
+    * `:ok` - Process exists and is alive
+    * `{:error, :timeout}` - Process did not appear within timeout
+
+  ## Examples
+
+      test "worker is available after supervisor starts" do
+        {:ok, _sup} = MySupervisor.start_link()
+
+        # Wait for the worker to be ready
+        :ok = LetItCrash.wait_for_process(:my_worker)
+
+        # Now safe to interact with it
+        assert MyWorker.get_status() == :ready
+      end
+
+      # With custom timeout for slow-starting processes
+      :ok = LetItCrash.wait_for_process(:heavy_worker, timeout: 5000)
+
+  """
+  @spec wait_for_process(atom(), keyword()) :: :ok | {:error, :timeout}
+  def wait_for_process(process_name, opts \\ []) when is_atom(process_name) do
+    timeout = Keyword.get(opts, :timeout, 1000)
+    interval = Keyword.get(opts, :interval, 50)
+    end_time = System.monotonic_time(:millisecond) + timeout
+
+    do_wait_for_process(process_name, end_time, interval)
+  end
+
+  defp do_wait_for_process(process_name, end_time, interval) do
+    case Process.whereis(process_name) do
+      pid when is_pid(pid) ->
+        if Process.alive?(pid),
+          do: :ok,
+          else: retry_wait_for_process(process_name, end_time, interval)
+
+      nil ->
+        retry_wait_for_process(process_name, end_time, interval)
+    end
+  end
+
+  defp retry_wait_for_process(process_name, end_time, interval) do
+    if System.monotonic_time(:millisecond) > end_time do
+      {:error, :timeout}
+    else
+      Process.sleep(interval)
+      do_wait_for_process(process_name, end_time, interval)
+    end
+  end
+
+  @doc """
   Crashes a process by sending it an exit signal.
 
   Follows the same convention as `Process.exit/2`, with the process as the first argument

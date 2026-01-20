@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-01-19
+
+### Added
+- **`wait_for_process/2` function** - Waits for a registered process to exist and be alive
+  - Useful in test setup when ensuring a process is available before interacting with it
+  - Configurable `:timeout` (default: 1000ms) and `:interval` (default: 50ms) options
+  - Returns `:ok` when process is found, `{:error, :timeout}` otherwise
+  - Particularly helpful after starting supervisors or during async initialization
+
 ## [0.3.0] - 2025-10-21
 
 ### Changed (Breaking)
@@ -86,6 +95,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Issue and PR templates for community contributions
 - Comprehensive test coverage with realistic usage examples
 
+[0.4.0]: https://github.com/volcov/let_it_crash/releases/tag/v0.4.0
 [0.3.0]: https://github.com/volcov/let_it_crash/releases/tag/v0.3.0
 [0.2.0]: https://github.com/volcov/let_it_crash/releases/tag/v0.2.0
 [0.1.0]: https://github.com/volcov/let_it_crash/releases/tag/v0.1.0
