@@ -376,7 +376,179 @@ defmodule LetItCrash do
     end
   end
 
+  @doc """
+  Asserts the impact of crashing a child process on its siblings within a supervision tree.
+
+  Crashes the `target` process and verifies that each process listed in `:expect`
+  reaches the expected status (`:restarted`, `:alive`, or `:stopped`).
+
+  This function validates that your chosen supervision strategy (`:one_for_one`,
+  `:one_for_all`, `:rest_for_one`) behaves as expected for your specific tree.
+
+  ## Parameters
+
+    * `supervisor` - PID or registered name of the supervisor
+    * `target` - Registered name of the child to crash
+    * `opts` - Options:
+      * `:expect` (required) - Keyword list of `{child_name, expected_status}`
+      * `:signal` - Exit signal: `:shutdown` (default) or `:kill`
+      * `:timeout` - Max wait time in ms (default: 2000)
+      * `:interval` - Polling interval in ms (default: 50)
+
+  ## Expected Statuses
+
+    * `:restarted` - Process is alive with a different PID than before the crash
+    * `:alive` - Process is alive with the same PID (unaffected)
+    * `:stopped` - Process is no longer registered or alive
+
+  Each status can also be paired with an assertion function that verifies
+  application-level behavior after the status is confirmed:
+
+    * `{:restarted, fn -> ... end}` - Verify behavior after restart
+    * `{:alive, fn -> ... end}` - Verify the unaffected process is still functional
+    * `{:stopped, fn -> ... end}` - Run assertions after confirming the process stopped
+
+  The assertion function runs only after the status is confirmed. If the status
+  does not match, the function is never called. If the status matches but the
+  function raises, the error propagates as a test failure.
+
+  ## Examples
+
+      # Verify one_for_all restarts all children
+      LetItCrash.assert_supervision_impact(:my_sup, :worker_a,
+        expect: [
+          worker_a: :restarted,
+          worker_b: :restarted,
+          worker_c: :restarted
+        ]
+      )
+
+      # Verify one_for_one only restarts the crashed child
+      LetItCrash.assert_supervision_impact(:my_sup, :worker_a,
+        expect: [
+          worker_a: :restarted,
+          worker_b: :alive,
+          worker_c: :alive
+        ]
+      )
+
+      # Verify application behavior, not just OTP mechanics
+      LetItCrash.assert_supervision_impact(:my_sup, :coordinator,
+        expect: [
+          coordinator: {:restarted, fn ->
+            assert MyCoordinator.get_state() == :idle
+          end},
+          worker_a: {:alive, fn ->
+            assert MyWorker.get_status(:worker_a) == :waiting
+          end},
+          worker_b: :restarted
+        ]
+      )
+
+  """
+  @spec assert_supervision_impact(pid() | atom(), atom(), keyword()) :: :ok | {:error, term()}
+  def assert_supervision_impact(supervisor, target, opts) do
+    expect = Keyword.fetch!(opts, :expect)
+    signal = Keyword.get(opts, :signal, :shutdown)
+    timeout = Keyword.get(opts, :timeout, 2000)
+    interval = Keyword.get(opts, :interval, 50)
+
+    supervisor_pid =
+      case supervisor do
+        pid when is_pid(pid) -> pid
+        name when is_atom(name) -> Process.whereis(name)
+      end
+
+    if is_nil(supervisor_pid) or not Process.alive?(supervisor_pid) do
+      {:error, :supervisor_not_found}
+    else
+      do_assert_supervision_impact(target, expect, signal, timeout, interval)
+    end
+  end
+
   # Private functions
+
+  defp do_assert_supervision_impact(target, expect, signal, timeout, interval) do
+    with before_pids when is_map(before_pids) <- snapshot_processes(expect),
+         :ok <- crash(target, signal) do
+      end_time = System.monotonic_time(:millisecond) + timeout
+      wait_for_expectations(expect, before_pids, end_time, interval)
+    end
+  end
+
+  defp snapshot_processes(expect) do
+    Enum.reduce_while(expect, %{}, fn {name, _expected_status}, acc ->
+      case Process.whereis(name) do
+        nil ->
+          {:halt, {:error, [{name, :not_found_before_crash}]}}
+
+        pid ->
+          {:cont, Map.put(acc, name, pid)}
+      end
+    end)
+  end
+
+  defp wait_for_expectations(expect, before_pids, end_time, interval) do
+    mismatches = compute_mismatches(expect, before_pids)
+
+    cond do
+      mismatches == [] ->
+        run_assertion_functions(expect)
+
+      System.monotonic_time(:millisecond) > end_time ->
+        {:error, mismatches}
+
+      true ->
+        Process.sleep(interval)
+        wait_for_expectations(expect, before_pids, end_time, interval)
+    end
+  end
+
+  defp compute_mismatches(expect, before_pids) do
+    expect
+    |> Enum.reduce([], fn {name, expected}, acc ->
+      expected_status = extract_status(expected)
+      original_pid = Map.fetch!(before_pids, name)
+      actual_status = determine_status(name, original_pid)
+
+      if actual_status == expected_status do
+        acc
+      else
+        [{name, [expected: expected_status, got: actual_status]} | acc]
+      end
+    end)
+    |> Enum.reverse()
+  end
+
+  defp extract_status({status, fun}) when is_function(fun, 0), do: status
+  defp extract_status(status) when is_atom(status), do: status
+
+  defp run_assertion_functions(expect) do
+    Enum.each(expect, fn
+      {_name, {_status, fun}} when is_function(fun, 0) -> fun.()
+      {_name, _status} -> :ok
+    end)
+
+    :ok
+  end
+
+  defp determine_status(name, original_pid) do
+    current_pid = Process.whereis(name)
+
+    cond do
+      is_nil(current_pid) ->
+        :stopped
+
+      current_pid == original_pid ->
+        if Process.alive?(current_pid), do: :alive, else: :stopped
+
+      Process.alive?(current_pid) ->
+        :restarted
+
+      true ->
+        :stopped
+    end
+  end
 
   defp validate_table_exists(table) do
     case :ets.whereis(table) do
