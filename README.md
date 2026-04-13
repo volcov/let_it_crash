@@ -241,6 +241,67 @@ LetItCrash.verify_ets_cleanup(:cache_table, :data_key,
 - `:expect_recreate` - Whether entry should be recreated (default: false)  
 - `:timeout` - Maximum wait time (default: 1000ms)
 
+### `assert_supervision_impact/3`
+Crashes a child process and verifies the expected impact on its siblings within a supervision tree. Validates that your chosen supervision strategy (`:one_for_one`, `:one_for_all`, `:rest_for_one`) behaves as expected for your specific tree.
+
+```elixir
+# Verify one_for_one: only the crashed child restarts
+LetItCrash.assert_supervision_impact(:my_supervisor, :worker_a,
+  expect: [
+    worker_a: :restarted,
+    worker_b: :alive,
+    worker_c: :alive
+  ]
+)
+
+# Verify one_for_all: all children restart
+LetItCrash.assert_supervision_impact(:my_supervisor, :worker_a,
+  expect: [
+    worker_a: :restarted,
+    worker_b: :restarted,
+    worker_c: :restarted
+  ]
+)
+
+# Verify rest_for_one: crashed child and later siblings restart
+LetItCrash.assert_supervision_impact(:my_supervisor, :worker_b,
+  expect: [
+    worker_a: :alive,
+    worker_b: :restarted,
+    worker_c: :restarted
+  ]
+)
+```
+
+Each status can be paired with an assertion function to verify **application-level behavior** after the supervision event — not just that processes restarted, but that your code actually handles the restart correctly:
+
+```elixir
+LetItCrash.assert_supervision_impact(:my_supervisor, :coordinator,
+  expect: [
+    coordinator: {:restarted, fn ->
+      # Verify the coordinator came back in a valid state
+      assert MyCoordinator.get_status() == :idle
+    end},
+    worker_a: {:alive, fn ->
+      # Verify the sibling is still functional
+      assert MyWorker.ready?(:worker_a)
+    end},
+    worker_b: :restarted
+  ]
+)
+```
+
+**Expected Statuses:**
+- `:restarted` - Process is alive with a different PID (was restarted by supervisor)
+- `:alive` - Process is alive with the same PID (unaffected)
+- `:stopped` - Process is no longer registered or alive (for `:temporary` restart)
+
+**Options:**
+- `:expect` - (required) Keyword list of `{child_name, expected_status}` or `{child_name, {expected_status, assertion_fn}}`
+- `:signal` - Exit signal: `:shutdown` (default) or `:kill`
+- `:timeout` - Maximum wait time (default: 2000ms)
+- `:interval` - Polling interval (default: 50ms)
+
 ## Advanced Usage Examples
 
 ### Testing Registry and ETS Cleanup
@@ -270,6 +331,48 @@ defmodule MyAppTest do
     
     # Verify ETS cleanup
     assert :ok = LetItCrash.verify_ets_cleanup(:app_cache, :server_data)
+
+    Process.exit(supervisor, :shutdown)
+  end
+end
+```
+
+### Testing Supervision Strategy Impact
+
+A common real-world scenario: you have a scoring system with a coordinator and multiple workers under a `:one_for_all` strategy. When the coordinator crashes mid-calculation, you need to verify that workers don't retain stale partial results and that the coordinator comes back ready to accept new work.
+
+```elixir
+defmodule ScoringSystemTest do
+  use ExUnit.Case
+  use LetItCrash
+
+  test "coordinator crash resets workers to clean state" do
+    {:ok, supervisor} = ScoringSupervisor.start_link()
+
+    # Workers are processing scores
+    ScoreWorker.submit(:worker_a, %{team: "A", score: 42})
+    ScoreWorker.submit(:worker_b, %{team: "B", score: 38})
+    ScoreCoordinator.begin_normalization(:coordinator)
+
+    # Coordinator crashes mid-normalization
+    LetItCrash.assert_supervision_impact(supervisor, :coordinator,
+      signal: :kill,
+      expect: [
+        coordinator: {:restarted, fn ->
+          # Coordinator must come back idle, not stuck in :normalizing
+          assert ScoreCoordinator.get_status(:coordinator) == :idle
+          # Must be able to accept new work immediately
+          assert :ok = ScoreCoordinator.begin_normalization(:coordinator)
+        end},
+        worker_a: {:restarted, fn ->
+          # Workers must not retain partial/stale scores
+          assert ScoreWorker.get_pending(:worker_a) == []
+        end},
+        worker_b: {:restarted, fn ->
+          assert ScoreWorker.get_pending(:worker_b) == []
+        end}
+      ]
+    )
 
     Process.exit(supervisor, :shutdown)
   end
