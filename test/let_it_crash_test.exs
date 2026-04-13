@@ -632,4 +632,152 @@ defmodule LetItCrashTest do
       assert result == {:error, :entry_not_cleaned_up}
     end
   end
+
+  describe "assert_supervision_impact/3" do
+    defmodule OneForOneSupervisor do
+      use Supervisor
+
+      def start_link(children_names) do
+        Supervisor.start_link(__MODULE__, children_names)
+      end
+
+      def init(children_names) do
+        children =
+          Enum.map(children_names, fn name ->
+            %{
+              id: name,
+              start: {LetItCrashTest.TestServer, :start_link, [[name: name]]},
+              restart: :permanent
+            }
+          end)
+
+        Supervisor.init(children, strategy: :one_for_one)
+      end
+    end
+
+    defmodule OneForAllSupervisor do
+      use Supervisor
+
+      def start_link(children_names) do
+        Supervisor.start_link(__MODULE__, children_names)
+      end
+
+      def init(children_names) do
+        children =
+          Enum.map(children_names, fn name ->
+            %{
+              id: name,
+              start: {LetItCrashTest.TestServer, :start_link, [[name: name]]},
+              restart: :permanent
+            }
+          end)
+
+        Supervisor.init(children, strategy: :one_for_all)
+      end
+    end
+
+    defmodule RestForOneSupervisor do
+      use Supervisor
+
+      def start_link(children_names) do
+        Supervisor.start_link(__MODULE__, children_names)
+      end
+
+      def init(children_names) do
+        children =
+          Enum.map(children_names, fn name ->
+            %{
+              id: name,
+              start: {LetItCrashTest.TestServer, :start_link, [[name: name]]},
+              restart: :permanent
+            }
+          end)
+
+        Supervisor.init(children, strategy: :rest_for_one)
+      end
+    end
+
+    test "one_for_one: only crashed child restarts" do
+      {:ok, sup} = OneForOneSupervisor.start_link([:ofo_a, :ofo_b, :ofo_c])
+
+      assert :ok =
+               LetItCrash.assert_supervision_impact(sup, :ofo_a,
+                 expect: [
+                   ofo_a: :restarted,
+                   ofo_b: :alive,
+                   ofo_c: :alive
+                 ]
+               )
+
+      Process.exit(sup, :shutdown)
+    end
+
+    test "one_for_all: all children restart when one crashes" do
+      {:ok, sup} = OneForAllSupervisor.start_link([:ofa_a, :ofa_b, :ofa_c])
+
+      assert :ok =
+               LetItCrash.assert_supervision_impact(sup, :ofa_b,
+                 expect: [
+                   ofa_a: :restarted,
+                   ofa_b: :restarted,
+                   ofa_c: :restarted
+                 ]
+               )
+
+      Process.exit(sup, :shutdown)
+    end
+
+    test "rest_for_one: crashed child and children started after it restart" do
+      {:ok, sup} = RestForOneSupervisor.start_link([:rfo_a, :rfo_b, :rfo_c])
+
+      # Crash :rfo_b — :rfo_a was started before, so it stays alive
+      # :rfo_b and :rfo_c (started after) should restart
+      assert :ok =
+               LetItCrash.assert_supervision_impact(sup, :rfo_b,
+                 expect: [
+                   rfo_a: :alive,
+                   rfo_b: :restarted,
+                   rfo_c: :restarted
+                 ]
+               )
+
+      Process.exit(sup, :shutdown)
+    end
+
+    test "returns error when supervisor is not found" do
+      assert {:error, :supervisor_not_found} =
+               LetItCrash.assert_supervision_impact(:nonexistent_supervisor, :worker,
+                 expect: [worker: :restarted]
+               )
+    end
+
+    test "returns error when expected process is not found before crash" do
+      {:ok, sup} = OneForOneSupervisor.start_link([:edge_a])
+
+      assert {:error, [{:nonexistent_child, :not_found_before_crash}]} =
+               LetItCrash.assert_supervision_impact(sup, :edge_a,
+                 expect: [
+                   edge_a: :restarted,
+                   nonexistent_child: :alive
+                 ]
+               )
+
+      Process.exit(sup, :shutdown)
+    end
+
+    test "supports :kill signal option" do
+      {:ok, sup} = OneForOneSupervisor.start_link([:kill_a, :kill_b])
+
+      assert :ok =
+               LetItCrash.assert_supervision_impact(sup, :kill_a,
+                 signal: :kill,
+                 expect: [
+                   kill_a: :restarted,
+                   kill_b: :alive
+                 ]
+               )
+
+      Process.exit(sup, :shutdown)
+    end
+  end
 end

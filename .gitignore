@@ -21,3 +21,6 @@ let_it_crash-*.tar
 
 # Temporary files, for example, from tests.
 /tmp/
+
+# Design plans (local only).
+/docs/plans/
