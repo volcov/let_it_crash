@@ -779,5 +779,71 @@ defmodule LetItCrashTest do
 
       Process.exit(sup, :shutdown)
     end
+
+    test "supports assertion functions to verify application behavior" do
+      {:ok, sup} = OneForOneSupervisor.start_link([:app_a, :app_b])
+
+      # Set state before crash
+      LetItCrashTest.TestServer.set_state(:app_a, :modified)
+
+      assert :ok =
+               LetItCrash.assert_supervision_impact(sup, :app_a,
+                 expect: [
+                   app_a:
+                     {:restarted,
+                      fn ->
+                        # After restart, state should be reset to initial
+                        assert LetItCrashTest.TestServer.get_state(:app_a) == :initial_state
+                      end},
+                   app_b:
+                     {:alive,
+                      fn ->
+                        # Sibling should still be functional
+                        assert LetItCrashTest.TestServer.get_state(:app_b) == :initial_state
+                      end}
+                 ]
+               )
+
+      Process.exit(sup, :shutdown)
+    end
+
+    test "mixes plain statuses and assertion functions" do
+      {:ok, sup} = OneForAllSupervisor.start_link([:mix_a, :mix_b, :mix_c])
+
+      assert :ok =
+               LetItCrash.assert_supervision_impact(sup, :mix_a,
+                 expect: [
+                   mix_a:
+                     {:restarted,
+                      fn ->
+                        assert LetItCrashTest.TestServer.get_state(:mix_a) == :initial_state
+                      end},
+                   mix_b: :restarted,
+                   mix_c: :restarted
+                 ]
+               )
+
+      Process.exit(sup, :shutdown)
+    end
+
+    test "assertion function failure propagates as test failure" do
+      {:ok, sup} = OneForOneSupervisor.start_link([:fail_a, :fail_b])
+
+      # This should raise because the assertion function will fail
+      assert_raise ExUnit.AssertionError, fn ->
+        LetItCrash.assert_supervision_impact(sup, :fail_a,
+          expect: [
+            fail_a:
+              {:restarted,
+               fn ->
+                 # This will fail — state resets to :initial_state, not :wrong
+                 assert LetItCrashTest.TestServer.get_state(:fail_a) == :wrong_state
+               end}
+          ]
+        )
+      end
+
+      Process.exit(sup, :shutdown)
+    end
   end
 end
