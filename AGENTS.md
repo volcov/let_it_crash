@@ -14,3 +14,17 @@
 - Keep functions small and focused on a single responsibility.
 - Extract complex logic into well-named private functions rather than deeply nesting control flow.
 - Follow standard Elixir formatting conventions (`mix format`).
+
+### Aliases
+
+- **One alias per line.** Do NOT use the brace expansion form
+  `alias Foo.{Bar, Baz}` — write each on its own line:
+
+  ```elixir
+  # No
+  alias LetItCrash.Async.{Observer, Report}
+
+  # Yes
+  alias LetItCrash.Async.Observer
+  alias LetItCrash.Async.Report
+  ```

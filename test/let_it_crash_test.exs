@@ -83,8 +83,7 @@ defmodule LetItCrashTest do
 
       LetItCrash.crash(:test_agent)
 
-      # Give it a moment to actually die
-      Process.sleep(10)
+      :ok = LetItCrash.wait_for_exit(pid)
       assert Process.whereis(:test_agent) == nil
     end
 
@@ -103,8 +102,7 @@ defmodule LetItCrashTest do
 
       assert result == :ok
 
-      # Give it a moment to actually die
-      Process.sleep(10)
+      :ok = LetItCrash.wait_for_exit(pid)
       assert Process.whereis(:pipeable_agent) == nil
     end
   end
@@ -147,8 +145,7 @@ defmodule LetItCrashTest do
 
       LetItCrash.crash(pid, :kill)
 
-      # Give it a moment to process the kill signal
-      Process.sleep(10)
+      :ok = LetItCrash.wait_for_exit(pid)
       refute Process.alive?(pid)
     end
 
@@ -160,8 +157,7 @@ defmodule LetItCrashTest do
 
       LetItCrash.crash(:test_trap_exit_agent, :kill)
 
-      # Give it a moment to actually die
-      Process.sleep(10)
+      :ok = LetItCrash.wait_for_exit(pid)
       assert Process.whereis(:test_trap_exit_agent) == nil
     end
 
@@ -174,8 +170,7 @@ defmodule LetItCrashTest do
       # With :kill signal, process cannot trap and will always die
       LetItCrash.crash(pid, :kill)
 
-      # Give it a moment to process the kill signal
-      Process.sleep(10)
+      :ok = LetItCrash.wait_for_exit(pid)
       refute Process.alive?(pid)
     end
 
@@ -194,8 +189,7 @@ defmodule LetItCrashTest do
 
       assert result == :ok
 
-      # Give it a moment to process the kill signal
-      Process.sleep(10)
+      :ok = LetItCrash.wait_for_exit(pid)
       assert Process.whereis(:pipeable_trap_exit) == nil
     end
 
@@ -265,8 +259,7 @@ defmodule LetItCrashTest do
       # Crash the process
       LetItCrash.crash(:test_recovery_server)
 
-      # Wait a bit for the crash to be processed
-      Process.sleep(10)
+      :ok = LetItCrash.wait_for_exit(original_pid)
 
       # Verify the process recovered (has a new PID)
       assert LetItCrash.recovered?(:test_recovery_server, timeout: 2000)
@@ -365,6 +358,48 @@ defmodule LetItCrashTest do
 
       # Clean up
       Process.exit(Process.whereis(:interval_test_process), :kill)
+    end
+  end
+
+  describe "wait_for_exit/2" do
+    test "returns :ok immediately when process is already dead" do
+      {:ok, pid} = Agent.start_link(fn -> 0 end)
+      Process.unlink(pid)
+
+      # Synchronise on death directly via Process.monitor/1 so the test
+      # for "already dead" is unambiguous: the call to wait_for_exit/2
+      # below is the ONLY thing under test.
+      ref = Process.monitor(pid)
+      Process.exit(pid, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 100
+      refute Process.alive?(pid)
+
+      assert LetItCrash.wait_for_exit(pid) == :ok
+    end
+
+    test "returns :ok when process dies during the wait" do
+      {:ok, pid} = Agent.start_link(fn -> 0 end)
+      Process.unlink(pid)
+
+      Task.start(fn ->
+        # Intentional: simulate a process that dies AFTER wait_for_exit/2
+        # is already blocked, exercising the {:DOWN, ...} receive path
+        # rather than the already-dead fast path.
+        Process.sleep(20)
+        Process.exit(pid, :kill)
+      end)
+
+      assert LetItCrash.wait_for_exit(pid, timeout: 500) == :ok
+      refute Process.alive?(pid)
+    end
+
+    test "returns {:error, :timeout} when process stays alive past the timeout" do
+      {:ok, pid} = Agent.start_link(fn -> 0 end)
+      Process.unlink(pid)
+      on_exit(fn -> if Process.alive?(pid), do: Process.exit(pid, :kill) end)
+
+      assert LetItCrash.wait_for_exit(pid, timeout: 50) == {:error, :timeout}
+      assert Process.alive?(pid)
     end
   end
 
