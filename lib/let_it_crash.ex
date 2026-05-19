@@ -29,6 +29,24 @@ defmodule LetItCrash do
   Use `:kill` when testing processes that trap exits, such as GenServers that
   need to perform cleanup operations.
 
+  ## Async work
+
+  Supervisor recovery is only part of the story. Production failures often
+  hide in fire-and-forget Tasks, Oban jobs, and LiveView `handle_async/3`
+  callbacks — work that runs outside the caller's stack frame and can fail
+  silently. For that, see `LetItCrash.Async`, which provides:
+
+    * `LetItCrash.Async.observe_async/1,2` — wrap a block of test code and
+      collect telemetry about every async exception inside it
+    * `LetItCrash.Async.assert_no_silent_swallow/1,2` — fail when a Task
+      raised but nobody noticed
+    * `LetItCrash.Async.assert_all_completed/2` — fail when async work
+      didn't finish within a wall-clock budget
+    * `LetItCrash.Async.assert_idempotent/2` — fail when running the same
+      operation twice produces different observable state
+
+  Both surfaces are imported by `use LetItCrash`.
+
   """
 
   # ETS table to store original PIDs for recovery tracking
@@ -37,7 +55,13 @@ defmodule LetItCrash do
   def start_tracking do
     case :ets.whereis(@table_name) do
       :undefined ->
-        :ets.new(@table_name, [:set, :public, :named_table])
+        try do
+          :ets.new(@table_name, [:set, :public, :named_table])
+        rescue
+          # Another caller created the named table between :ets.whereis/1 and
+          # :ets.new/2 — that race is benign; the table exists either way.
+          ArgumentError -> :ok
+        end
 
       _ ->
         :ok
@@ -46,10 +70,18 @@ defmodule LetItCrash do
 
   @doc """
   Imports LetItCrash testing functions into the current module.
+
+  This imports both the top-level helpers (`crash/2`, `recovered?/2,3`,
+  `wait_for_process/2`, `wait_for_exit/2`, `test_restart/3`,
+  `assert_clean_registry/3`, `verify_ets_cleanup/3`,
+  `assert_supervision_impact/3`) and the async helpers from
+  `LetItCrash.Async` (`observe_async/1,2`, `assert_no_silent_swallow/1,2`,
+  `assert_all_completed/2`, `assert_idempotent/2`).
   """
   defmacro __using__(_opts) do
     quote do
       import LetItCrash
+      import LetItCrash.Async
     end
   end
 
@@ -115,6 +147,57 @@ defmodule LetItCrash do
     else
       Process.sleep(interval)
       do_wait_for_process(process_name, end_time, interval)
+    end
+  end
+
+  @doc """
+  Waits for a process to exit (terminate).
+
+  Uses `Process.monitor/1` to block until the given PID is no longer alive,
+  or until the timeout elapses. This is the deterministic replacement for
+  `Process.sleep/1` calls that wait "long enough" for a process to die.
+
+  If the process is already dead when the call is made, the monitor fires
+  immediately with `:noproc` and the function returns `:ok`.
+
+  ## Parameters
+
+    * `pid` - The PID of the process to wait on
+    * `opts` - Options for waiting
+      * `:timeout` - Maximum time to wait (default: 1000ms)
+
+  ## Returns
+
+    * `:ok` - The process is no longer alive
+    * `{:error, :timeout}` - Process is still alive after the timeout
+
+  ## Examples
+
+      test "process dies after crash" do
+        {:ok, pid} = Agent.start_link(fn -> 0 end)
+        Process.unlink(pid)
+
+        LetItCrash.crash(pid)
+
+        :ok = LetItCrash.wait_for_exit(pid)
+        refute Process.alive?(pid)
+      end
+
+      # With custom timeout for slow-terminating processes
+      :ok = LetItCrash.wait_for_exit(pid, timeout: 5000)
+
+  """
+  @spec wait_for_exit(pid(), keyword()) :: :ok | {:error, :timeout}
+  def wait_for_exit(pid, opts \\ []) when is_pid(pid) do
+    timeout = Keyword.get(opts, :timeout, 1000)
+    ref = Process.monitor(pid)
+
+    receive do
+      {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
+    after
+      timeout ->
+        Process.demonitor(ref, [:flush])
+        {:error, :timeout}
     end
   end
 

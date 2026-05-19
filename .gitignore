@@ -24,3 +24,6 @@ let_it_crash-*.tar
 
 # Design plans (local only).
 /docs/plans/
+
+# Claude Code local config and plans (local only).
+/.claude/

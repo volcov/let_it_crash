@@ -16,10 +16,11 @@ Embrace the "let it crash" philosophy in your tests by easily simulating crashes
 
 Real bugs this library helps catch:
 - 🔍 **Resource leaks**: Database connections, file handles, ETS entries not cleaned up
-- 🗂️ **Registry inconsistencies**: Stale entries pointing to dead processes  
+- 🗂️ **Registry inconsistencies**: Stale entries pointing to dead processes
 - 💾 **State corruption**: Shared caches with orphaned data after crashes
 - 🔗 **Cascade failures**: Client processes crashing when servers restart
 - ⚙️ **Incomplete initialization**: Processes not fully recovering their expected state
+- 🔥 **Silent async swallow**: Fire-and-forget Tasks, Oban jobs, or `handle_async/3` callbacks that raise but never reach the test process
 
 *Think of it as integration testing for your crash recovery logic, not unit testing the BEAM.*
 
@@ -30,10 +31,47 @@ Add `let_it_crash` to your list of dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:let_it_crash, "~> 0.1.0", only: :test}
+    {:let_it_crash, "~> 0.5.0", only: :test}
   ]
 end
 ```
+
+## Testing async work in Phoenix + Oban
+
+The most common production bug LetItCrash helps catch is the **silent
+swallow** — a Task raises but no one is awaiting it, the supervisor moves
+on, the test passes, and a real user gets stuck. `LetItCrash.Async` wraps
+your test code in an observer block that subscribes to telemetry exception
+events and lets you name the failure modes explicitly:
+
+```elixir
+defmodule MyAppWeb.WidgetControllerTest do
+  use MyAppWeb.ConnCase
+  use LetItCrash
+
+  test "POST /api/widgets fires a Task that doesn't silently swallow", %{conn: conn} do
+    report =
+      observe_async(fn ->
+        conn = post(conn, "/api/widgets", %{name: "alpha"})
+        assert json_response(conn, 202)
+      end)
+
+    assert :ok = assert_no_silent_swallow(report)
+    assert :ok = assert_all_completed(report, within: 2_000)
+  end
+
+  test "the create-widget Oban worker is idempotent" do
+    assert :ok =
+             assert_idempotent(
+               fn -> MyApp.Widgets.do_create(%{name: "alpha"}) end,
+               state: fn -> MyApp.Repo.aggregate(MyApp.Widget, :count) end
+             )
+  end
+end
+```
+
+See `LetItCrash.Async` for the full surface — failure-mode definitions,
+options, limitations, and the Ecto.Sandbox interaction note.
 
 ## Usage
 

@@ -5,6 +5,66 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-05-19
+
+### Added
+- **`wait_for_exit/2` function** — monitor-based replacement for `Process.sleep/1`
+  calls that wait for a process to die. Returns `:ok` once the target pid is
+  no longer alive, or `{:error, :timeout}` after the configurable budget
+  (default 1000ms). Handles already-dead pids correctly (monitor fires
+  immediately with `:noproc`).
+- **`LetItCrash.Async` module** — new public surface for testing async work.
+  - `observe_async/1,2` — wrap a block of test code and collect a
+    `%LetItCrash.Async.Report{}` describing telemetry exception events
+    that fired inside it (Task, Oban, LiveView `handle_async/3`). Handlers
+    are isolated per `observe_async` block via `$callers` lineage tracking,
+    so two concurrent observers running under `async: true` do not
+    cross-pollute their reports.
+  - `assert_no_silent_swallow/1,2` — fail when a Task raised but nobody
+    noticed.
+  - `assert_all_completed/2` — fail when async work did not finish within
+    the supplied `:within` wall-clock budget.
+  - `assert_idempotent/2` — fail when calling a 0-arity function twice
+    produces different observable state. Takes a function (NOT a Report),
+    because idempotency by definition requires a second execution. The
+    user supplies a `:state` 0-arity snapshot function.
+  - `LetItCrash.Async.Report` struct — pure data describing observed
+    async work. Fields: `:spawned`, `:completed`, `:crashed`, `:exceptions`,
+    `:warnings`, `:duration_ms`, `:started_at`, `:ended_at`.
+- **`:telemetry ~> 1.0` runtime dependency** — required for the Async
+  observer module. Loosened from a tighter pin so host apps on any
+  `1.x` line of telemetry can adopt cleanly.
+- **Dependabot config** — `.github/dependabot.yml` opens weekly PRs for
+  mix and GitHub Actions updates.
+- **AGENTS.md alias style guide** — one alias per line; no
+  `alias Foo.{Bar, Baz}` brace form.
+
+### Changed
+- **`start_tracking/0`** is now race-safe under concurrent `async: true`
+  tests. Previously a TOCTOU window between `:ets.whereis/1` and
+  `:ets.new/2` could raise `ArgumentError`; that race is now rescued
+  internally (benign — the table exists either way).
+- **`use LetItCrash`** now also imports `LetItCrash.Async`, so the new
+  observer + assertions are available unqualified in test modules.
+- **README leads with a Phoenix + Oban example** showing `observe_async`
+  + `assert_no_silent_swallow` + `assert_all_completed` +
+  `assert_idempotent`. The supervisor-focused examples remain below.
+
+### Internal
+- All seven `Process.sleep(10)` calls in the test suite have been
+  replaced with `wait_for_exit/2`. The test suite is now fully
+  deterministic with respect to process termination.
+
+### Notes
+- `assert_idempotent/2` accepts a `fun`, not a `Report` — this differs
+  from an earlier draft because idempotency requires re-execution by
+  definition. See `LetItCrash.Async.assert_idempotent/2` docs.
+- v0.5.0 does **not** capture `Logger` output, so Tasks that log errors
+  but recover gracefully are still considered "completed normally".
+- Broadway / GenStage observer support is deferred to a future release.
+- The `:sandbox` option on `observe_async/2` is documentation-only in
+  this release.
+
 ## [0.4.0] - 2026-01-19
 
 ### Added
@@ -95,6 +155,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Issue and PR templates for community contributions
 - Comprehensive test coverage with realistic usage examples
 
+[0.5.0]: https://github.com/volcov/let_it_crash/releases/tag/v0.5.0
 [0.4.0]: https://github.com/volcov/let_it_crash/releases/tag/v0.4.0
 [0.3.0]: https://github.com/volcov/let_it_crash/releases/tag/v0.3.0
 [0.2.0]: https://github.com/volcov/let_it_crash/releases/tag/v0.2.0
