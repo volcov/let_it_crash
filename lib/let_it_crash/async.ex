@@ -80,7 +80,8 @@ defmodule LetItCrash.Async do
       and a never-finished pid drives `assert_all_completed/2`'s
       `:incomplete` branch. The `Task` family (`Task.start/1`,
       `Task.async/1`, `Task.async_stream/3`, `Task.Supervisor.*`) is covered
-      because it spawns through `Task.Supervised`. **Bare `spawn/1`** is NOT
+      because it spawns through Elixir's internal task-supervision machinery.
+      **Bare `spawn/1`** is NOT
       tagged as `:task` (it shows up as `kind: :unknown`) and a third-party
       library that wraps `spawn/1` and emits `[:task, :exception]` is still
       filtered by the `$callers` gate (last bullet). Tracing is off by
@@ -101,7 +102,7 @@ defmodule LetItCrash.Async do
       `:"$callers"` process dictionary. `Task.async/1`, `Task.start/1`, and
       `Task.Supervisor.async_nolink/3` all copy `$callers` automatically, so
       Task-spawned work works as expected. However, raw `spawn/1` (and
-      `Process.spawn/1`) do NOT copy `$callers`. A third-party library that
+      `Process.spawn/4`) do NOT copy `$callers`. A third-party library that
       wraps `spawn/1` and emits `[:task, :exception]` would be silently
       filtered out even though it does emit telemetry. (The `trace: true`
       path does not use this gate — it relies on `:set_on_spawn` subtree
