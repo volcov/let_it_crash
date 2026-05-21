@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-05-21
+
+### Added
+- **Opt-in process-tree tracing for `observe_async/2` (`trace: true`).** When
+  enabled, the observer turns on `:erlang.trace(owner, true, [:procs,
+  :set_on_spawn, :monotonic_timestamp])` for the duration of the block and
+  classifies the resulting process-exit stream. This makes two previously
+  documented-but-empty promises real:
+  - **Raw-`Task` silent-swallow detection.** Plain `Task.start/1`,
+    `Task.async/1`, `Task.async_stream/3`, and `Task.Supervisor.*` emit no
+    `[:task, :exception]` telemetry, so a raised-and-swallowed exception used
+    to be invisible. Trace-observed crashes are now synthesized as
+    `{[:task, :exit], %{}, %{pid: pid, reason: reason}}` entries in
+    `report.exceptions`, so `assert_no_silent_swallow/1` catches them.
+  - **Real spawned-pid tracking.** `report.spawned`, `report.completed`, and
+    `report.crashed` are now populated from the trace stream. This brings
+    `assert_all_completed/2`'s `:incomplete` branch live — it reports which
+    spawned pid never finished, instead of always returning `:ok`.
+- **`:settle` option for `observe_async/2`** (default `50` ms). At block exit,
+  the observer waits up to `:settle` ms for outstanding spawned pids to finish
+  before classifying the remainder as still-running (a bounded drain rather
+  than a fixed sleep).
+- **`:trace_unavailable` warning.** If the calling process is already traced by
+  another tool when `trace: true` is requested, tracing is skipped and
+  `:trace_unavailable` is added to `report.warnings`; the block still runs and
+  the telemetry path is unaffected.
+
+### Changed
+- `report.completed` entries sourced from tracing carry the process **exit
+  reason** as their `result` (tracing observes exits, not return values).
+- Tracing is off by default — existing behavior and performance are unchanged
+  unless `trace: true` is passed per call.
+
+### Documentation
+- README: new "Catching raw `Task` crashes (`trace: true`)" section with a
+  worked example feeding `assert_no_silent_swallow/1` and
+  `assert_all_completed/2`, plus notes on the opt-in default and the
+  `:trace_unavailable` fallback.
+- README: bumped the installation snippet to `~> 0.6.0`.
+
 ## [0.5.0] - 2026-05-19
 
 ### Added

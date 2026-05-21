@@ -133,6 +133,197 @@ defmodule LetItCrash.AsyncTest do
     end
   end
 
+  describe "observe_async/2 with trace: true" do
+    @tag :capture_log
+    test "catches a raw Task.start swallow that emits no telemetry" do
+      report =
+        Async.observe_async(
+          fn -> Task.start(fn -> raise "boom" end) end,
+          trace: true,
+          settle: 100
+        )
+
+      assert {:error, {:silent_swallow, exceptions}} =
+               Async.assert_no_silent_swallow(report)
+
+      assert Enum.any?(exceptions, fn
+               {[:task, :exit], _, %{reason: {%RuntimeError{message: "boom"}, _stack}}} -> true
+               _ -> false
+             end)
+
+      assert Enum.any?(report.crashed, fn
+               {_pid, {%RuntimeError{message: "boom"}, _stack}, _finished} -> true
+               _ -> false
+             end)
+    end
+
+    test "a normal Task.start is NOT a swallow and shows up in completed" do
+      report =
+        Async.observe_async(
+          fn -> Task.start(fn -> :ok end) end,
+          trace: true,
+          settle: 100
+        )
+
+      assert Async.assert_no_silent_swallow(report) == :ok
+      assert Enum.any?(report.completed, fn {_pid, _reason, _finished} -> true end)
+      assert report.crashed == []
+    end
+
+    @tag :capture_log
+    test "an outsider crash in a non-traced process is not captured" do
+      # The sibling is spawned by the test process BEFORE tracing is enabled,
+      # so it is outside the observer's `:set_on_spawn` subtree. Its crash
+      # during the block must NOT appear in this observer's report.
+      {:ok, sibling} =
+        Task.start(fn ->
+          receive do
+            :go -> raise "outsider boom"
+          end
+        end)
+
+      # If the test exits before the sibling processes :go, don't leak it.
+      on_exit(fn -> Process.exit(sibling, :kill) end)
+
+      report =
+        Async.observe_async(
+          fn ->
+            send(sibling, :go)
+            Process.sleep(30)
+          end,
+          trace: true,
+          settle: 100
+        )
+
+      assert report.crashed == []
+      assert report.spawned == []
+      assert Async.assert_no_silent_swallow(report) == :ok
+    end
+
+    @tag :capture_log
+    test "degrades gracefully with :trace_unavailable when already traced" do
+      owner = self()
+      {:ok, tracer} = Task.start(fn -> Process.sleep(:infinity) end)
+      on_exit(fn -> Process.exit(tracer, :kill) end)
+
+      # A different tracer holds the process: observe_async's trace enable
+      # raises ArgumentError ("can only have one tracer per process") and is
+      # rescued to :unavailable rather than crashing the test.
+      :erlang.trace(owner, true, [{:tracer, tracer}, :procs])
+
+      report = Async.observe_async(fn -> :ok end, trace: true)
+
+      :erlang.trace(owner, false, [:procs])
+
+      assert :trace_unavailable in report.warnings
+      assert report.exceptions == []
+    end
+
+    test "populates spawned and completed for an awaited Task" do
+      report =
+        Async.observe_async(
+          fn -> Task.async(fn -> :ok end) |> Task.await() end,
+          trace: true,
+          settle: 50
+        )
+
+      assert Enum.any?(report.spawned, fn
+               {_pid, :task, _started} -> true
+               _ -> false
+             end)
+
+      assert Enum.any?(report.completed, fn {_pid, _reason, _finished} -> true end)
+      assert Async.assert_all_completed(report, within: 1000) == :ok
+    end
+
+    test "a still-running spawned pid drives assert_all_completed :incomplete" do
+      report =
+        Async.observe_async(
+          fn -> Task.start(fn -> Process.sleep(:infinity) end) end,
+          trace: true,
+          settle: 50
+        )
+
+      # Register cleanup BEFORE asserting so a failing assertion can't leak the
+      # still-running sleeper under async: true.
+      on_exit(fn ->
+        Enum.each(report.spawned, fn {pid, _kind, _started} -> Process.exit(pid, :kill) end)
+      end)
+
+      assert {:error, {:incomplete, incomplete}} =
+               Async.assert_all_completed(report, within: 1000)
+
+      assert Enum.any?(incomplete, fn
+               {_pid, :task, _started} -> true
+               _ -> false
+             end)
+    end
+
+    @tag :capture_log
+    test "a crashed pid counts as done, not incomplete" do
+      report =
+        Async.observe_async(
+          fn -> Task.start(fn -> raise "crash" end) end,
+          trace: true,
+          settle: 100
+        )
+
+      # The crash is recorded, and a crashed pid counts toward "done" — so
+      # nothing is left over for `assert_all_completed/2` to flag as
+      # `:incomplete` (completed_count includes crashed pids).
+      assert Enum.any?(report.crashed, fn
+               {_pid, {%RuntimeError{message: "crash"}, _stack}, _finished} -> true
+               _ -> false
+             end)
+
+      assert Async.assert_all_completed(report, within: 1000) == :ok
+    end
+
+    @tag :capture_log
+    test "tracing is off by default — no spawned tracking, no swallow detection" do
+      report = Async.observe_async(fn -> Task.start(fn -> raise "x" end) end)
+
+      assert Async.assert_no_silent_swallow(report) == :ok
+      assert report.spawned == []
+      assert report.crashed == []
+      assert report.warnings == []
+    end
+
+    @tag :capture_log
+    test "catches a crash swallowed inside Task.async_stream" do
+      # The real-world blind spot: an `async_stream_nolink` whose results are
+      # discarded (`Stream.run/1`). A task that raises is reported back as an
+      # `{:exit, _}` stream element — and then thrown away. No exception ever
+      # reaches the caller, so the failure is invisible without tracing.
+      #
+      # The Task.Supervisor is started INSIDE the block so it (and the tasks
+      # it spawns) are inside the observer's `:set_on_spawn` subtree.
+      report =
+        Async.observe_async(
+          fn ->
+            {:ok, sup} = Task.Supervisor.start_link()
+
+            sup
+            |> Task.Supervisor.async_stream_nolink([1, 2, 3], fn
+              2 -> raise "boom"
+              n -> n
+            end)
+            |> Stream.run()
+          end,
+          trace: true,
+          settle: 100
+        )
+
+      assert {:error, {:silent_swallow, exceptions}} =
+               Async.assert_no_silent_swallow(report)
+
+      assert Enum.any?(exceptions, fn
+               {[:task, :exit], _, %{reason: {%RuntimeError{message: "boom"}, _stack}}} -> true
+               _ -> false
+             end)
+    end
+  end
+
   describe "assert_no_silent_swallow/1,2" do
     test "returns :ok when no exceptions were captured" do
       report = Async.observe_async(fn -> :ok end)

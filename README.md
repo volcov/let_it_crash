@@ -31,7 +31,7 @@ Add `let_it_crash` to your list of dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:let_it_crash, "~> 0.5.0", only: :test}
+    {:let_it_crash, "~> 0.6.0", only: :test}
   ]
 end
 ```
@@ -69,6 +69,35 @@ defmodule MyAppWeb.WidgetControllerTest do
   end
 end
 ```
+
+### Catching raw `Task` crashes (`trace: true`)
+
+Plain `Task.start/1`, `Task.async/1`, and `Task.async_stream/3` emit **no**
+telemetry, so a raised-and-swallowed exception is invisible to the default
+observer. Pass `trace: true` to turn on `:erlang.trace`-based process-exit
+observation for the block. It catches the crash (surfaced as a synthesized
+`{[:task, :exit], _, _}` exception), and populates `report.spawned`,
+`report.completed`, and `report.crashed` so `assert_all_completed/2` can report
+*which* spawned process never finished:
+
+```elixir
+test "the background reindex Task crashes loudly, not silently" do
+  report =
+    observe_async(
+      fn -> MyApp.Search.reindex_async() end,
+      trace: true,
+      settle: 200
+    )
+
+  assert :ok = assert_no_silent_swallow(report)
+  assert :ok = assert_all_completed(report, within: 1_000)
+end
+```
+
+Tracing is **opt-in and off by default** — existing behavior and performance
+are unchanged unless you pass `trace: true`. If the test process is already
+traced by another tool, tracing is skipped and `:trace_unavailable` is added to
+`report.warnings` (the block still runs).
 
 See `LetItCrash.Async` for the full surface — failure-mode definitions,
 options, limitations, and the Ecto.Sandbox interaction note.
