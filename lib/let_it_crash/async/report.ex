@@ -21,13 +21,20 @@ defmodule LetItCrash.Async.Report do
       during the block. `kind` is `:task | :unknown`. `started_at` is in
       monotonic milliseconds.
     * `:completed` — list of `{pid, result, finished_at}` for spawned work
-      that returned a value.
+      that finished cleanly. For trace-sourced entries (`trace: true`)
+      `result` is the process **exit reason** (`:normal` / `:shutdown` /
+      `{:shutdown, _}`), not the task's return value — tracing observes
+      exits, not return values.
     * `:crashed` — list of `{pid, reason, finished_at}` for spawned work
-      that exited abnormally.
-    * `:exceptions` — list of telemetry exception events seen during the
-      block. Each entry is `{event_name, measurements, metadata}`.
-    * `:warnings` — list of atom hints from the observer
-      (e.g. `:no_oban_events_seen`). Reserved; usually empty in v0.5.0.
+      that exited abnormally. `reason` is the exit reason, typically
+      `{exception, stacktrace}` for a raised error.
+    * `:exceptions` — list of exception events seen during the block. Each
+      entry is `{event_name, measurements, metadata}`. Telemetry events keep
+      their upstream shape; trace-observed crashes are synthesized as
+      `{[:task, :exit], %{}, %{pid: pid, reason: reason}}`.
+    * `:warnings` — list of atom hints from the observer. Includes
+      `:trace_unavailable` when `trace: true` was requested but the owner was
+      already traced by another tool. Usually empty.
     * `:duration_ms` — wall-clock duration of the block in milliseconds.
     * `:started_at` — monotonic time (ms) when the block started.
     * `:ended_at` — monotonic time (ms) when the block ended.

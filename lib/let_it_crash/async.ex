@@ -60,32 +60,52 @@ defmodule LetItCrash.Async do
         sandbox: :inherit  # default; call Ecto.Adapters.SQL.Sandbox.allow/3 explicitly when needed
       )
 
-  ## Limitations (v0.5.0)
+  ## Limitations (v0.6.0)
 
     * **No telemetry from raw `Task`.** Pure Elixir `Task` (whether
       `Task.start/1`, `Task.async/1`, or `Task.Supervisor.async_nolink/3`)
-      does NOT emit `[:task, :exception]` events today. We subscribe to
-      that event name speculatively, but in practice the events that
-      reach the observer come from Oban (`[:oban, :job, :exception]`) and
-      Phoenix LiveView (`[:phoenix, :live_view, :handle_async, :exception]`).
-      To detect a raw Task swallow you currently need to either install a
-      telemetry shim that emits `[:task, :exception]` or use
+      does NOT emit `[:task, :exception]` events today. The telemetry path
+      only sees Oban (`[:oban, :job, :exception]`) and Phoenix LiveView
+      (`[:phoenix, :live_view, :handle_async, :exception]`). To catch a raw
+      `Task` swallow, pass `trace: true` (see next bullet) or use
       `assert_all_completed/2` to bound the work's wall-clock duration.
+    * **Opt-in process-tree tracing (`trace: true`).** When enabled, the
+      observer turns on `:erlang.trace(owner, true, [:procs, :set_on_spawn,
+      :monotonic_timestamp])` for the duration of the block. This tracks the
+      pids spawned in the owner's subtree (`report.spawned`), records which
+      finished (`report.completed`) and which exited abnormally
+      (`report.crashed`), and synthesizes a `{[:task, :exit], %{},
+      %{pid:, reason:}}` entry in `report.exceptions` for each crash — so a
+      raw-`Task` silent swallow is caught by `assert_no_silent_swallow/1`,
+      and a never-finished pid drives `assert_all_completed/2`'s
+      `:incomplete` branch. The `Task` family (`Task.start/1`,
+      `Task.async/1`, `Task.async_stream/3`, `Task.Supervisor.*`) is covered
+      because it spawns through `Task.Supervised`. **Bare `spawn/1`** is NOT
+      tagged as `:task` (it shows up as `kind: :unknown`) and a third-party
+      library that wraps `spawn/1` and emits `[:task, :exception]` is still
+      filtered by the `$callers` gate (last bullet). Tracing is off by
+      default — it adds no overhead and changes no behavior unless requested.
+    * **One tracer per process.** `:erlang.trace/3` allows a single tracer.
+      If the calling process is already traced by another tool when
+      `trace: true` is requested, tracing is skipped and `:trace_unavailable`
+      is added to `report.warnings`; the block still runs and the telemetry
+      path is unaffected. Nesting two `trace: true` observers in the *same*
+      pid is unsupported (the inner teardown would tear down the outer
+      trace); cross-process nesting is fine.
     * No `Logger` capture. Tasks that log errors but recover gracefully are
       currently considered "completed normally".
     * Broadway / GenStage are not yet observed.
-    * Process-tree tracing is not used. Only telemetry-emitting work is
-      visible. Raw `spawn/1` without telemetry will not show up in the
-      Report's `:exceptions` list.
-    * **`$callers` lineage gate.** To isolate concurrent observers, the
-      handler forwards an event only when the emitting process is the
-      observer's owner OR has the owner in its `:"$callers"` process
-      dictionary. `Task.async/1`, `Task.start/1`, and
-      `Task.Supervisor.async_nolink/3` all copy `$callers` automatically,
-      so Task-spawned work works as expected. However, raw `spawn/1`
-      (and `Process.spawn/1`) do NOT copy `$callers`. A third-party
-      library that wraps `spawn/1` and emits `[:task, :exception]` would
-      be silently filtered out even though it does emit telemetry.
+    * **`$callers` lineage gate (telemetry path).** To isolate concurrent
+      observers, the telemetry handler forwards an event only when the
+      emitting process is the observer's owner OR has the owner in its
+      `:"$callers"` process dictionary. `Task.async/1`, `Task.start/1`, and
+      `Task.Supervisor.async_nolink/3` all copy `$callers` automatically, so
+      Task-spawned work works as expected. However, raw `spawn/1` (and
+      `Process.spawn/1`) do NOT copy `$callers`. A third-party library that
+      wraps `spawn/1` and emits `[:task, :exception]` would be silently
+      filtered out even though it does emit telemetry. (The `trace: true`
+      path does not use this gate — it relies on `:set_on_spawn` subtree
+      isolation instead.)
 
   See `LetItCrash.Async.Report` for the data structure produced by
   `observe_async/1,2`.
@@ -107,8 +127,19 @@ defmodule LetItCrash.Async do
 
     * `:observe` — list of telemetry event names to subscribe to. Defaults
       to the standard Task/Oban/LiveView exception events.
-    * `:sandbox` — `:inherit` (default) or `:off`. Documentation-only in
-      v0.5.0; does not change behavior.
+    * `:trace` — `false` (default) or `true`. When `true`, enables
+      `:erlang.trace`-based process-exit observation of the block's spawn
+      subtree. This populates `report.spawned/completed/crashed` and surfaces
+      raw-`Task` crashes (which emit no telemetry) as
+      `{[:task, :exit], %{}, %{pid:, reason:}}` entries in `report.exceptions`.
+      Off by default — opt in per call. If the calling process is already
+      traced by another tool, tracing is skipped and `:trace_unavailable` is
+      added to `report.warnings` (the block still runs normally).
+    * `:settle` — non-negative integer (default `50`). Milliseconds to wait at
+      block exit for outstanding spawned pids to finish before classifying the
+      remainder as still-running. Only meaningful with `trace: true`.
+    * `:sandbox` — `:inherit` (default) or `:off`. Documentation-only;
+      does not change behavior.
 
   ## Examples
 
@@ -126,8 +157,19 @@ defmodule LetItCrash.Async do
                LetItCrash.Async.assert_no_silent_swallow(report)
 
   Pure Elixir `Task.start/1` + `raise` does NOT emit any telemetry today, so
-  it will NOT show up in the report — see "Limitations" above. For that case
-  use `assert_all_completed/2` to bound the wall-clock duration instead.
+  it will NOT show up in the report on the telemetry path. Pass `trace: true`
+  to catch it via process-exit tracing — the crash surfaces as a
+  `{[:task, :exit], _, _}` entry in `report.exceptions`:
+
+      report =
+        LetItCrash.Async.observe_async(
+          fn -> Task.start(fn -> raise "boom" end) end,
+          trace: true,
+          settle: 100
+        )
+
+      assert {:error, {:silent_swallow, _}} =
+               LetItCrash.Async.assert_no_silent_swallow(report)
 
   """
   @spec observe_async((-> any()), keyword()) :: Report.t()
@@ -157,6 +199,11 @@ defmodule LetItCrash.Async do
   test would have already failed — so the only way exceptions reach this
   Report is by being absorbed by a non-linked Task, a retried Oban job, or
   a swallowed LiveView async.
+
+  When the block was observed with `trace: true`, raw-`Task` crashes (which
+  emit no telemetry) also count: they surface as synthesized
+  `{[:task, :exit], %{}, %{pid: pid, reason: reason}}` entries, where `reason`
+  is the exit reason — typically `{exception, stacktrace}` for a raised error.
 
   ## Returns
 
@@ -200,9 +247,10 @@ defmodule LetItCrash.Async do
     * `{:error, {:exceeded_within, %{duration_ms: n, budget_ms: w}}}` — the
       block took longer than `within`
     * `{:error, {:incomplete, list}}` — one or more spawned pids never
-      reached either `:completed` or `:crashed` (reserved for when the
-      observer can track that — currently always returns `:ok` for the
-      no-pid-tracking case)
+      reached either `:completed` or `:crashed` within the settle window.
+      `list` is the unfinished `{pid, kind, started_at}` entries. Requires
+      `trace: true` on the `observe_async/2` call (without it the spawned
+      list is empty and this branch never fires)
 
   ## Examples
 
@@ -224,9 +272,9 @@ defmodule LetItCrash.Async do
         {:error, {:exceeded_within, %{duration_ms: report.duration_ms, budget_ms: within}}}
 
       spawned_count > 0 and completed_count < spawned_count ->
-        # Reserved: when Observer tracks individual pids, surface unfinished ones.
-        # For v0.5.0 the spawned list is always empty (no tracing), so this branch
-        # stays unreachable. Kept so the shape is stable when tracing lands.
+        # With `trace: true` the Observer tracks individual pids, so this
+        # surfaces the spawned pids that never reached `:completed` or
+        # `:crashed` within the settle window.
         unfinished = unfinished_spawned(report)
         {:error, {:incomplete, unfinished}}
 
